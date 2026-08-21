@@ -1,0 +1,26 @@
+name: Daily PaperFlow email
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install .
+      - run: paperflow --json daily --email --no-write
+        env:
+          PAPERFLOW_GMAIL_ADDRESS: ${{ secrets.PAPERFLOW_GMAIL_ADDRESS }}
+          PAPERFLOW_GMAIL_APP_PASSWORD: ${{ secrets.PAPERFLOW_GMAIL_APP_PASSWORD }}
+          PAPERFLOW_PRIVATE_CONFIG_JSON: ${{ secrets.PAPERFLOW_PRIVATE_CONFIG_JSON }}

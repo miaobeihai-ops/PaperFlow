@@ -23,9 +23,11 @@ from paperflow.config import (
     load_local_config,
 )
 from paperflow.daily import AllSourcesFailed, run_daily
+from paperflow.email import GmailSettings, send_daily_email
 from paperflow.models import DailyResult, SourceFailure
 from paperflow.normalize import canonical_arxiv_id
 from paperflow.notes import NoteExists, paper_note_path, write_paper_note
+from paperflow.report import render_email_html, render_email_text
 from paperflow.search import search_history
 
 
@@ -36,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
     daily = subparsers.add_parser("daily")
     daily.add_argument("--date")
+    daily.add_argument("--email", action="store_true")
     daily.add_argument("--no-write", action="store_true")
     daily.add_argument(
         "--json", action="store_true", dest="json_output", default=argparse.SUPPRESS
@@ -75,6 +78,23 @@ def _target_date(config: PaperFlowConfig, requested: str | None) -> str:
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ConfigError("configured timezone is invalid") from exc
     return datetime.now(timezone).date().isoformat()
+
+
+def _load_email_config() -> tuple[PaperFlowConfig, GmailSettings]:
+    address = os.environ.get("PAPERFLOW_GMAIL_ADDRESS")
+    app_password = os.environ.get("PAPERFLOW_GMAIL_APP_PASSWORD")
+    private_config = os.environ.get("PAPERFLOW_PRIVATE_CONFIG_JSON")
+    if not address or not app_password or not private_config:
+        raise ConfigError("email configuration is incomplete")
+
+    config = load_cloud_config(private_config)
+    if not config.mail_to:
+        raise ConfigError("email configuration is incomplete")
+    try:
+        settings = GmailSettings(address, app_password, config.mail_to)
+    except ValueError as exc:
+        raise ConfigError("email configuration is invalid") from exc
+    return config, settings
 
 
 def _failure_json(failure: SourceFailure) -> dict[str, str]:
@@ -122,8 +142,13 @@ def _print_error(args: argparse.Namespace, message: str) -> None:
 
 
 def _run_daily(args: argparse.Namespace) -> int:
+    settings = None
+    target_date = None
     try:
-        config = _load_config()
+        if args.email:
+            config, settings = _load_email_config()
+        else:
+            config = _load_config()
         target_date = _target_date(config, args.date)
         result = run_daily(
             config,
@@ -137,23 +162,68 @@ def _run_daily(args: argparse.Namespace) -> int:
             print(f"error: {exc}")
         return 2
     except AllSourcesFailed as exc:
+        failure_email_sent = False
+        if settings is not None and target_date is not None:
+            try:
+                send_daily_email(
+                    settings,
+                    f"PaperFlow {target_date}",
+                    render_email_text(target_date, [], exc.failures),
+                    render_email_html(target_date, [], exc.failures),
+                )
+                failure_email_sent = True
+            except Exception:
+                pass
         payload = {
             "ok": False,
             "error": str(exc),
             "failures": [_failure_json(failure) for failure in exc.failures],
         }
+        if args.email:
+            payload["failure_email_sent"] = failure_email_sent
         if args.json_output:
             _print_json(payload)
         else:
             print(f"error: {exc}")
             for failure in exc.failures:
                 print(f"{failure.source}: {failure.message}")
+            if args.email:
+                print(
+                    "failure email: sent"
+                    if failure_email_sent
+                    else "failure email: failed"
+                )
         return 3
 
+    if settings is not None:
+        try:
+            send_daily_email(
+                settings,
+                f"PaperFlow {result.date}",
+                render_email_text(result.date, result.papers, result.failures),
+                render_email_html(result.date, result.papers, result.failures),
+            )
+        except Exception:
+            payload = {
+                "ok": False,
+                "error": "email delivery failed",
+                "email_sent": False,
+            }
+            if args.json_output:
+                _print_json(payload)
+            else:
+                print("error: email delivery failed")
+            return 5
+
     if args.json_output:
-        _print_json(_result_json(result))
+        payload = _result_json(result)
+        if args.email:
+            payload["email_sent"] = True
+        _print_json(payload)
     else:
         _print_result(result)
+        if args.email:
+            print("email: sent")
     return 0
 
 

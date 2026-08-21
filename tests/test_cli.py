@@ -325,6 +325,232 @@ def test_daily_does_not_mask_unexpected_errors(config, monkeypatch):
         main(["daily", "--date", "2026-08-20"])
 
 
+def _email_environment(monkeypatch):
+    monkeypatch.setenv("PAPERFLOW_GMAIL_ADDRESS", "sender@example.com")
+    monkeypatch.setenv("PAPERFLOW_GMAIL_APP_PASSWORD", "PRIVATE_PASSWORD")
+    monkeypatch.setenv("PAPERFLOW_PRIVATE_CONFIG_JSON", '{"private":"value"}')
+
+
+def test_daily_without_email_never_sends(config, monkeypatch, capsys):
+    monkeypatch.delenv("PAPERFLOW_PRIVATE_CONFIG_JSON", raising=False)
+    monkeypatch.setattr("paperflow.cli.load_local_config", lambda: config)
+    monkeypatch.setattr("paperflow.cli.run_daily", lambda *_args, **_kwargs: daily_result())
+    monkeypatch.setattr(
+        "paperflow.cli.send_daily_email",
+        lambda *_args: pytest.fail("daily without --email must not send SMTP"),
+    )
+
+    assert main(["daily", "--date", "2026-08-20", "--no-write"]) == 0
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--json", "daily", "--email", "--no-write", "--date", "2026-08-20"],
+        ["daily", "--email", "--no-write", "--date", "2026-08-20", "--json"],
+    ],
+)
+@pytest.mark.parametrize(
+    "failures",
+    [(), (SourceFailure("hf-trending", "request timed out"),)],
+)
+def test_daily_email_success_renders_result_once_in_order(
+    config, monkeypatch, capsys, argv, failures
+):
+    _email_environment(monkeypatch)
+    cloud = replace(config, vault_path=None, mail_to="reader@example.com")
+    result = daily_result(failures=failures)
+    calls = []
+    monkeypatch.setattr("paperflow.cli.load_cloud_config", lambda _raw: cloud)
+    monkeypatch.setattr(
+        "paperflow.cli.load_local_config",
+        lambda: pytest.fail("email mode must not load local config"),
+    )
+    monkeypatch.setattr(
+        "paperflow.cli.run_daily",
+        lambda actual, target_date, write_report: calls.append(
+            ("daily", actual, target_date, write_report)
+        )
+        or result,
+    )
+    monkeypatch.setattr(
+        "paperflow.cli.render_email_text",
+        lambda date, papers, actual_failures: calls.append(
+            ("text", date, papers, actual_failures)
+        )
+        or "plain payload",
+    )
+    monkeypatch.setattr(
+        "paperflow.cli.render_email_html",
+        lambda date, papers, actual_failures: calls.append(
+            ("html", date, papers, actual_failures)
+        )
+        or "<p>html payload</p>",
+    )
+    monkeypatch.setattr(
+        "paperflow.cli.send_daily_email",
+        lambda settings, subject, plain, html: calls.append(
+            ("send", settings, subject, plain, html)
+        ),
+    )
+
+    assert main(argv) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["email_sent"] is True
+    assert calls[0] == ("daily", cloud, "2026-08-20", False)
+    assert calls[1] == ("text", result.date, result.papers, result.failures)
+    assert calls[2] == ("html", result.date, result.papers, result.failures)
+    assert calls[3][0] == "send"
+    assert calls[3][1].address == "sender@example.com"
+    assert calls[3][1].mail_to == "reader@example.com"
+    assert calls[3][2:] == (
+        "PaperFlow 2026-08-20",
+        "plain payload",
+        "<p>html payload</p>",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing_name", "missing_value"),
+    [
+        ("PAPERFLOW_GMAIL_ADDRESS", None),
+        ("PAPERFLOW_GMAIL_ADDRESS", ""),
+        ("PAPERFLOW_GMAIL_APP_PASSWORD", None),
+        ("PAPERFLOW_GMAIL_APP_PASSWORD", ""),
+        ("PAPERFLOW_PRIVATE_CONFIG_JSON", None),
+        ("PAPERFLOW_PRIVATE_CONFIG_JSON", ""),
+        ("mail_to", None),
+        ("mail_to", ""),
+    ],
+)
+def test_daily_email_missing_configuration_returns_two_before_fetch_or_smtp(
+    config, monkeypatch, capsys, missing_name, missing_value
+):
+    _email_environment(monkeypatch)
+    cloud = replace(config, vault_path=None, mail_to="reader@example.com")
+    if missing_name == "mail_to":
+        cloud = replace(cloud, mail_to=missing_value)
+    elif missing_value is None:
+        monkeypatch.delenv(missing_name)
+    else:
+        monkeypatch.setenv(missing_name, missing_value)
+    monkeypatch.setattr("paperflow.cli.load_cloud_config", lambda _raw: cloud)
+    monkeypatch.setattr(
+        "paperflow.cli.load_local_config",
+        lambda: pytest.fail("email mode must never fall back to local config"),
+    )
+    monkeypatch.setattr(
+        "paperflow.cli.run_daily", lambda *_args, **_kwargs: pytest.fail("must not fetch")
+    )
+    monkeypatch.setattr(
+        "paperflow.cli.send_daily_email", lambda *_args: pytest.fail("must not send")
+    )
+
+    assert main(["--json", "daily", "--email", "--no-write"]) == 2
+
+    output = capsys.readouterr().out
+    assert "PRIVATE_PASSWORD" not in output
+    assert json.loads(output)["ok"] is False
+
+
+def test_daily_email_all_sources_failed_attempts_failure_email_and_returns_three(
+    config, monkeypatch, capsys
+):
+    _email_environment(monkeypatch)
+    cloud = replace(config, vault_path=None, mail_to="reader@example.com")
+    failures = (
+        SourceFailure("hf-daily", "network error"),
+        SourceFailure("arxiv", "HTTP 503"),
+    )
+    sent = []
+    monkeypatch.setattr("paperflow.cli.load_cloud_config", lambda _raw: cloud)
+    monkeypatch.setattr(
+        "paperflow.cli.run_daily",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AllSourcesFailed(failures)),
+    )
+    monkeypatch.setattr(
+        "paperflow.cli.send_daily_email",
+        lambda settings, subject, plain, html: sent.append(
+            (settings, subject, plain, html)
+        ),
+    )
+
+    assert main(
+        ["daily", "--email", "--no-write", "--date", "2026-08-20", "--json"]
+    ) == 3
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["failure_email_sent"] is True
+    assert payload["failures"] == [
+        {"source": "hf-daily", "message": "network error"},
+        {"source": "arxiv", "message": "HTTP 503"},
+    ]
+    assert len(sent) == 1
+    assert sent[0][1] == "PaperFlow 2026-08-20"
+    assert "2026-08-20" in sent[0][2]
+    assert "network error" in sent[0][2]
+    assert "HTTP 503" in sent[0][3]
+    assert "PRIVATE_PASSWORD" not in sent[0][2] + sent[0][3]
+
+
+def test_daily_email_all_sources_failed_smtp_failure_stays_three_and_is_sanitized(
+    config, monkeypatch, capsys
+):
+    _email_environment(monkeypatch)
+    cloud = replace(config, vault_path=None, mail_to="reader@example.com")
+    failures = (SourceFailure("arxiv", "network error"),)
+    monkeypatch.setattr("paperflow.cli.load_cloud_config", lambda _raw: cloud)
+    monkeypatch.setattr(
+        "paperflow.cli.run_daily",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AllSourcesFailed(failures)),
+    )
+    monkeypatch.setattr(
+        "paperflow.cli.send_daily_email",
+        lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("PRIVATE_PASSWORD https://private.example/token")
+        ),
+    )
+
+    assert main(["--json", "daily", "--email", "--no-write"]) == 3
+
+    output = capsys.readouterr().out
+    assert "PRIVATE_PASSWORD" not in output
+    assert "private.example" not in output
+    payload = json.loads(output)
+    assert payload["failure_email_sent"] is False
+    assert payload["error"] == "all paper sources failed"
+
+
+def test_daily_email_normal_smtp_failure_returns_five_and_is_sanitized(
+    config, monkeypatch, capsys
+):
+    _email_environment(monkeypatch)
+    cloud = replace(config, vault_path=None, mail_to="reader@example.com")
+    monkeypatch.setattr("paperflow.cli.load_cloud_config", lambda _raw: cloud)
+    monkeypatch.setattr("paperflow.cli.run_daily", lambda *_args, **_kwargs: daily_result())
+    monkeypatch.setattr(
+        "paperflow.cli.send_daily_email",
+        lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("PRIVATE_PASSWORD https://private.example/token")
+        ),
+    )
+
+    assert main(["--json", "daily", "--email", "--no-write"]) == 5
+
+    output = capsys.readouterr().out
+    assert "PRIVATE_PASSWORD" not in output
+    assert "private.example" not in output
+    assert json.loads(output) == {
+        "ok": False,
+        "error": "email delivery failed",
+        "email_sent": False,
+    }
+
+
 @pytest.mark.parametrize(
     "argv",
     [

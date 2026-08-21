@@ -1,0 +1,37 @@
+from pathlib import Path
+
+
+WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "daily.yml"
+
+
+def test_daily_email_workflow_contract():
+    content = WORKFLOW.read_text(encoding="utf-8")
+
+    assert content.startswith("name: Daily PaperFlow email\n\non:\n")
+    assert 'cron: "0 0 * * *"' in content
+    assert "workflow_dispatch:" in content
+    assert "permissions:\n  contents: read" in content
+    assert "runs-on: ubuntu-latest" in content
+    assert "timeout-minutes: 10" in content
+    assert "uses: actions/checkout@v4" in content
+    assert "uses: actions/setup-python@v5" in content
+    assert 'python-version: "3.11"' in content
+    assert "cache: pip" in content
+    assert "run: pip install ." in content
+    assert "run: paperflow --json daily --email --no-write" in content
+    assert "PAPERFLOW_GMAIL_ADDRESS: ${{ secrets.PAPERFLOW_GMAIL_ADDRESS }}" in content
+    assert (
+        "PAPERFLOW_GMAIL_APP_PASSWORD: "
+        "${{ secrets.PAPERFLOW_GMAIL_APP_PASSWORD }}" in content
+    )
+    assert (
+        "PAPERFLOW_PRIVATE_CONFIG_JSON: "
+        "${{ secrets.PAPERFLOW_PRIVATE_CONFIG_JSON }}" in content
+    )
+
+    lowered = content.casefold()
+    assert "upload-artifact" not in lowered
+    assert "git commit" not in lowered
+    assert "git push" not in lowered
+    assert "openai" not in lowered
+    assert "anthropic" not in lowered
