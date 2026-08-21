@@ -401,3 +401,219 @@ def test_default_skill_path_uses_current_agents_location():
         for path in normalized
     )
     assert not any("/.codex/skills/" in path for path in normalized)
+
+
+def test_valid_data_root_adds_required_checks_and_uses_its_config(tmp_path):
+    doctor = _doctor()
+    home = tmp_path / "PaperFlowHome"
+    config_path = home / "config" / "config.toml"
+    vault_path = tmp_path / "Vault"
+    wrapper_path = home / "bin" / "paperflow.cmd"
+    cache_path = home / "cache"
+    temp_path = home / "tmp"
+    config_path.parent.mkdir(parents=True)
+    wrapper_path.parent.mkdir()
+    cache_path.mkdir()
+    temp_path.mkdir()
+    vault_path.mkdir()
+    wrapper_path.write_text("@echo off\n", encoding="utf-8")
+    _valid_config(config_path, vault_path)
+    calls = {"exists": {}, "file": {}, "dir": {}}
+
+    def counted(kind, operation):
+        def inspect(path):
+            calls[kind][path] = calls[kind].get(path, 0) + 1
+            return operation(path)
+
+        return inspect
+
+    checks = _by_name(
+        doctor.run_checks(
+            skill_path=tmp_path / "missing-skill.md",
+            which=lambda _command: None,
+            path_exists=counted("exists", Path.exists),
+            path_is_file=counted("file", Path.is_file),
+            path_is_dir=counted("dir", Path.is_dir),
+            environ={
+                "PAPERFLOW_HOME": str(home),
+                "APPDATA": str(tmp_path / "FallbackAppData"),
+            },
+            python_version=(3, 11, 0),
+        )
+    )
+
+    expected = {
+        "DataRoot": "DataRoot is available",
+        "PaperFlow wrapper": "PaperFlow wrapper is available",
+        "PaperFlow cache": "PaperFlow cache is available",
+        "PaperFlow temp": "PaperFlow temp is available",
+    }
+    for name, message in expected.items():
+        assert checks[name] == doctor.Check(name, True, True, message)
+    assert checks["Configuration"].ok is True
+    assert checks["Vault"].ok is True
+    for path in (home, wrapper_path, cache_path, temp_path, config_path, vault_path):
+        assert calls["exists"][path] == 1
+    assert calls["dir"][home] == 1
+    assert calls["file"][wrapper_path] == 1
+    assert calls["dir"][cache_path] == 1
+    assert calls["dir"][temp_path] == 1
+
+
+def test_invalid_present_data_root_does_not_fall_back_or_leak_path(tmp_path):
+    doctor = _doctor()
+    private_home = tmp_path / "PRIVATE_HOME_SENTINEL"
+    private_home.write_text("not a directory", encoding="utf-8")
+    fallback_config = tmp_path / "AppData" / "PaperFlow" / "config.toml"
+    fallback_vault = tmp_path / "FallbackVault"
+    fallback_config.parent.mkdir(parents=True)
+    fallback_vault.mkdir()
+    _valid_config(fallback_config, fallback_vault)
+    observed_paths = []
+
+    checks = _by_name(
+        doctor.run_checks(
+            skill_path=tmp_path / "missing-skill.md",
+            which=lambda _command: None,
+            path_exists=lambda path: observed_paths.append(path) or path.exists(),
+            path_is_file=Path.is_file,
+            path_is_dir=Path.is_dir,
+            environ={
+                "PAPERFLOW_HOME": str(private_home),
+                "APPDATA": str(fallback_config.parents[1]),
+            },
+            python_version=(3, 11, 0),
+        )
+    )
+
+    assert checks["DataRoot"] == doctor.Check(
+        "DataRoot", False, True, "DataRoot was not found"
+    )
+    assert checks["Configuration"].ok is False
+    assert fallback_config not in observed_paths
+    messages = " ".join(check.message for check in checks.values())
+    assert str(private_home) not in messages
+    assert "PRIVATE_HOME_SENTINEL" not in messages
+
+
+@pytest.mark.parametrize(
+    "invalid_home", ["", "relative-private-home", "C:\\private\r\nhome"]
+)
+def test_syntactically_invalid_data_root_does_not_fall_back(
+    tmp_path, invalid_home
+):
+    doctor = _doctor()
+    fallback_config = tmp_path / "AppData" / "PaperFlow" / "config.toml"
+    fallback_config.parent.mkdir(parents=True)
+    fallback_config.write_text("private fallback", encoding="utf-8")
+    observed_paths = []
+
+    checks = _by_name(
+        doctor.run_checks(
+            config_path=None,
+            skill_path=tmp_path / "missing-skill.md",
+            which=lambda _command: None,
+            path_exists=lambda path: observed_paths.append(path) or path.exists(),
+            environ={
+                "PAPERFLOW_HOME": invalid_home,
+                "APPDATA": str(fallback_config.parents[1]),
+            },
+            python_version=(3, 11, 0),
+        )
+    )
+
+    assert checks["DataRoot"].ok is False
+    assert checks["DataRoot"].required is True
+    assert checks["Configuration"].ok is False
+    assert fallback_config not in observed_paths
+    if invalid_home:
+        assert invalid_home not in " ".join(check.message for check in checks.values())
+
+
+def test_data_root_components_require_existence_and_correct_type(tmp_path):
+    doctor = _doctor()
+    home = tmp_path / "PaperFlowHome"
+    wrapper_path = home / "bin" / "paperflow.cmd"
+    cache_path = home / "cache"
+    home.mkdir()
+    wrapper_path.parent.mkdir()
+    wrapper_path.mkdir()
+    cache_path.write_text("not a directory", encoding="utf-8")
+
+    checks = _by_name(
+        doctor.run_checks(
+            skill_path=tmp_path / "missing-skill.md",
+            which=lambda _command: None,
+            environ={"PAPERFLOW_HOME": str(home)},
+            python_version=(3, 11, 0),
+        )
+    )
+
+    assert checks["DataRoot"] == doctor.Check(
+        "DataRoot", True, True, "DataRoot is available"
+    )
+    assert checks["PaperFlow wrapper"] == doctor.Check(
+        "PaperFlow wrapper", False, True, "PaperFlow wrapper was not found"
+    )
+    assert checks["PaperFlow cache"] == doctor.Check(
+        "PaperFlow cache", False, True, "PaperFlow cache was not found"
+    )
+    assert checks["PaperFlow temp"] == doctor.Check(
+        "PaperFlow temp", False, True, "PaperFlow temp was not found"
+    )
+
+
+def test_explicit_config_path_wins_while_data_root_checks_remain(tmp_path):
+    doctor = _doctor()
+    home = tmp_path / "PaperFlowHome"
+    home.write_text("not a directory", encoding="utf-8")
+    explicit_config = tmp_path / "explicit.toml"
+    vault_path = tmp_path / "Vault"
+    vault_path.mkdir()
+    _valid_config(explicit_config, vault_path)
+
+    checks = _by_name(
+        doctor.run_checks(
+            config_path=explicit_config,
+            skill_path=tmp_path / "missing-skill.md",
+            which=lambda _command: None,
+            environ={"PAPERFLOW_HOME": str(home)},
+            python_version=(3, 11, 0),
+        )
+    )
+
+    assert checks["DataRoot"].ok is False
+    assert checks["Configuration"].ok is True
+    assert checks["Vault"].ok is True
+
+
+def test_legacy_mode_check_contract_is_unchanged():
+    doctor = _doctor()
+
+    checks = doctor.run_checks(
+        config_path=Path("C:/missing.toml"),
+        vault_path=Path("C:/missing-vault"),
+        skill_path=Path("C:/missing-skill.md"),
+        which=lambda _command: None,
+        path_exists=lambda _path: False,
+        path_is_file=lambda _path: False,
+        path_is_dir=lambda _path: False,
+        environ={"APPDATA": "C:/Users/test/AppData/Roaming"},
+        python_version=(3, 10, 0),
+    )
+
+    assert checks == (
+        doctor.Check("Python", False, True, "Python 3.11+ is required"),
+        doctor.Check("Git", False, True, "Git was not found"),
+        doctor.Check("Configuration", False, True, "Configuration was not found"),
+        doctor.Check("Vault", False, True, "Vault path was not found"),
+        doctor.Check("Codex", False, True, "Codex was not found"),
+        doctor.Check(
+            "PaperFlow Skill", False, True, "PaperFlow Skill was not found"
+        ),
+        doctor.Check("Zotero", False, False, "Zotero was not found"),
+        doctor.Check("Obsidian", False, False, "Obsidian was not found"),
+        doctor.Check(
+            "AI Sidebar", False, False, "Verify AI Sidebar manually in Zotero"
+        ),
+    )

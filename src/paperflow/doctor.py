@@ -32,6 +32,36 @@ def _unique_paths(candidates: Sequence[Path]) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(candidates))
 
 
+def _cached_path_inspector(
+    operation: Callable[[Path], bool],
+) -> Callable[[Path], bool]:
+    results: dict[Path, bool] = {}
+
+    def inspect(path: Path) -> bool:
+        if path not in results:
+            results[path] = operation(path)
+        return results[path]
+
+    return inspect
+
+
+def _valid_data_root(
+    raw_home: str,
+    path_exists: Callable[[Path], bool],
+    path_is_dir: Callable[[Path], bool],
+) -> Path | None:
+    home = Path(raw_home).expanduser()
+    if (
+        not raw_home
+        or "\n" in raw_home
+        or "\r" in raw_home
+        or not home.is_absolute()
+        or (path_exists(home) and not path_is_dir(home))
+    ):
+        return None
+    return home
+
+
 def run_checks(
     *,
     config_path: Path | None = None,
@@ -46,6 +76,9 @@ def run_checks(
 ) -> tuple[Check, ...]:
     """Inspect PaperFlow prerequisites without changing system state."""
     env = os.environ if environ is None else environ
+    path_exists = _cached_path_inspector(path_exists)
+    path_is_file = _cached_path_inspector(path_is_file)
+    path_is_dir = _cached_path_inspector(path_is_dir)
     version = tuple(sys.version_info[:3] if python_version is None else python_version)
     checks = [
         Check(
@@ -63,14 +96,61 @@ def run_checks(
         Check("Git", git_ok, True, "Git is available" if git_ok else "Git was not found")
     )
 
+    data_root: Path | None = None
+    data_root_is_valid = True
+    if "PAPERFLOW_HOME" in env:
+        data_root = _valid_data_root(
+            env["PAPERFLOW_HOME"], path_exists, path_is_dir
+        )
+        data_root_is_valid = data_root is not None
+        data_root_ok = (
+            data_root is not None
+            and path_exists(data_root)
+            and path_is_dir(data_root)
+        )
+        checks.append(
+            Check(
+                "DataRoot",
+                data_root_ok,
+                True,
+                "DataRoot is available" if data_root_ok else "DataRoot was not found",
+            )
+        )
+        if data_root is not None:
+            data_root_components = (
+                ("PaperFlow wrapper", data_root / "bin" / "paperflow.cmd", path_is_file),
+                ("PaperFlow cache", data_root / "cache", path_is_dir),
+                ("PaperFlow temp", data_root / "tmp", path_is_dir),
+            )
+            component_results = tuple(
+                (name, path_exists(path) and expected_type(path))
+                for name, path, expected_type in data_root_components
+            )
+            checks.extend(
+                Check(
+                    name,
+                    ok,
+                    True,
+                    f"{name} is available" if ok else f"{name} was not found",
+                )
+                for name, ok in component_results
+            )
+
     actual_config_path = config_path
-    if actual_config_path is None and env.get("APPDATA"):
-        actual_config_path = Path(env["APPDATA"]) / "PaperFlow" / "config.toml"
+    if actual_config_path is None:
+        if data_root is not None:
+            actual_config_path = data_root / "config" / "config.toml"
+        elif "PAPERFLOW_HOME" not in env and env.get("APPDATA"):
+            actual_config_path = Path(env["APPDATA"]) / "PaperFlow" / "config.toml"
 
     loaded_config: PaperFlowConfig | None = None
     config_ok = False
     config_message = "Configuration was not found"
-    if actual_config_path is not None and path_exists(actual_config_path):
+    if (
+        (config_path is not None or data_root_is_valid)
+        and actual_config_path is not None
+        and path_exists(actual_config_path)
+    ):
         if not path_is_file(actual_config_path):
             config_message = "Configuration is invalid"
         else:
