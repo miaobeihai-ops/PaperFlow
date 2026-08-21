@@ -116,6 +116,19 @@ def test_skill_email_uses_complete_cloud_no_write_command():
     assert "`--email`" not in daily.replace(f"`{command}`", "")
 
 
+def test_skill_email_exit_handling_is_adjacent_to_email_command():
+    text = _skill_text()
+    daily = next(line for line in text.splitlines() if line.startswith("- Daily:"))
+    folded = daily.casefold()
+
+    for rule in (
+        "exit 2: email/private config invalid or missing",
+        "exit 3: all paper sources failed (failure email may be attempted)",
+        "exit 5: smtp/email delivery failed",
+    ):
+        assert rule in folded
+
+
 def test_skill_is_concise_and_has_required_sections():
     text = _skill_text()
     assert len(re.findall(r"\b[\w'-]+\b", text)) < 500
