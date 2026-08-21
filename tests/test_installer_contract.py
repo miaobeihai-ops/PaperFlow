@@ -261,6 +261,37 @@ def _invoke_path_function(current_path: str, bin_dir: str) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
+def _invoke_set_path_function(
+    current_path: str, bin_dir: str, legacy_bin_dir: str
+) -> dict[str, object]:
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    command = (
+        ". "
+        + _powershell_literal(str(PATH_HELPER))
+        + "; Set-PaperFlowPathEntry -CurrentPath "
+        + _powershell_literal(current_path)
+        + " -BinDir "
+        + _powershell_literal(bin_dir)
+        + " -LegacyBinDir "
+        + _powershell_literal(legacy_bin_dir)
+        + " | ConvertTo-Json -Compress"
+    )
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return json.loads(result.stdout)
+
+
 def test_installer_declares_safe_preview_first_interface():
     text = INSTALLER.read_text(encoding="utf-8")
 
@@ -336,6 +367,67 @@ def test_add_path_entry_is_pure_normalized_and_idempotent(
     result = _invoke_path_function(current_path, bin_dir)
 
     assert result == {"Changed": changed, "Value": expected}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_set_path_entry_replaces_only_exact_legacy_entry():
+    result = _invoke_set_path_function(
+        r"C:\Tools;C:\Accounts\test\AppData\Local\PaperFlow\bin;C:\Other",
+        r"D:\PaperFlowData\bin",
+        r"C:\Accounts\test\AppData\Local\PaperFlow\bin",
+    )
+
+    assert result == {
+        "Changed": True,
+        "Value": r"C:\Tools;C:\Other;D:\PaperFlowData\bin",
+    }
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_set_path_entry_is_case_insensitive_and_idempotent():
+    result = _invoke_set_path_function(
+        r"D:\paperflowdata\BIN\\;C:\Other",
+        r"D:\PaperFlowData\bin",
+        r"C:\Legacy\PaperFlow\bin",
+    )
+
+    assert result == {
+        "Changed": False,
+        "Value": r"D:\paperflowdata\BIN\\;C:\Other",
+    }
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize(
+    ("current_path", "bin_dir", "legacy_bin_dir", "expected"),
+    [
+        ("", r"D:\PaperFlowData\bin", "", r"D:\PaperFlowData\bin"),
+        (
+            r" ; C:\Tools ;;;C:\Other; ",
+            r"D:\PaperFlowData\bin",
+            "",
+            r" C:\Tools ;C:\Other;D:\PaperFlowData\bin",
+        ),
+        (
+            r"d:\paperflowdata\bin\\;C:\Other",
+            r"D:\PaperFlowData\bin",
+            r"D:\PaperFlowData\bin",
+            r"C:\Other;D:\PaperFlowData\bin",
+        ),
+        (
+            r"C:\Legacy\bin;C:\Other;c:\legacy\BIN\\",
+            r"D:\PaperFlowData\bin",
+            r"C:\Legacy\bin",
+            r"C:\Other;D:\PaperFlowData\bin",
+        ),
+    ],
+)
+def test_set_path_entry_handles_empty_and_legacy_edge_cases(
+    current_path, bin_dir, legacy_bin_dir, expected
+):
+    result = _invoke_set_path_function(current_path, bin_dir, legacy_bin_dir)
+
+    assert result == {"Changed": True, "Value": expected}
 
 
 def test_installer_uses_current_agents_skill_paths_only():
