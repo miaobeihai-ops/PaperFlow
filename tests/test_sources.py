@@ -245,6 +245,26 @@ def test_request_does_not_retry_other_client_errors(monkeypatch):
     assert sleeps == []
 
 
+def test_request_does_not_retry_status_600(monkeypatch):
+    calls = 0
+    sleeps = []
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(600, text="invalid status")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr("paperflow.fetch.time.sleep", sleeps.append)
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        request_with_retry(client, "https://example.test", attempts=3)
+
+    assert exc_info.value.response.status_code == 600
+    assert calls == 1
+    assert sleeps == []
+
+
 def test_request_raises_last_recoverable_exception(monkeypatch):
     calls = 0
 
@@ -267,6 +287,14 @@ def test_request_rejects_non_positive_attempts(attempts):
     with httpx.Client() as client:
         with pytest.raises(ValueError, match="attempts must be at least 1"):
             request_with_retry(client, "https://example.test", attempts=attempts)
+
+
+def test_request_rejects_more_than_three_attempts():
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, text="ok"))
+
+    with httpx.Client(transport=transport) as client:
+        with pytest.raises(ValueError, match="attempts must be at most 3"):
+            request_with_retry(client, "https://example.test", attempts=4)
 
 
 @pytest.mark.parametrize("attempts", [True, 1.5, "3"])
