@@ -23,6 +23,27 @@ def _read(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def _markdown_section(text: str, heading: str) -> str:
+    match = re.search(
+        rf"^## {re.escape(heading)}\s*$\n(.*?)(?=^## |\Z)",
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None, f"README section not found: {heading}"
+    return match.group(1)
+
+
+def _fenced_blocks(text: str, language: str) -> list[str]:
+    return [
+        match.group(1).strip()
+        for match in re.finditer(
+            rf"^```{re.escape(language)}\s*$\n(.*?)^```\s*$",
+            text,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+    ]
+
+
 def _snapshot(root: Path) -> dict[str, bytes | None]:
     return {
         path.relative_to(root).as_posix(): path.read_bytes() if path.is_file() else None
@@ -1889,29 +1910,152 @@ def test_readme_documents_data_root_install_layout_and_scoped_environment():
     assert "恢复安装进程原有的 TEMP、TMP 和 PIP_NO_CACHE_DIR" in text
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell parser test")
+def test_readme_fenced_installer_commands_parse_with_windows_powershell():
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    commands = [
+        line.strip()
+        for block in _fenced_blocks(_read("README.md"), "powershell")
+        for line in block.splitlines()
+        if "install-windows.ps1" in line
+    ]
+    assert len(commands) == 5
+    command_array = ", ".join(_powershell_literal(command) for command in commands)
+    parser_script = (
+        f"$commands = @({command_array}); "
+        "foreach ($source in $commands) { "
+        "$tokens = $null; $parseErrors = $null; "
+        "[System.Management.Automation.Language.Parser]::ParseInput("
+        "$source, [ref]$tokens, [ref]$parseErrors) | Out-Null; "
+        "if ($parseErrors.Count -ne 0) { "
+        "$parseErrors | ForEach-Object { Write-Error $_.Message }; exit 1 } }"
+    )
+
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-Command", parser_script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_readme_checkonly_command_runs_in_isolation_without_mutation(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    commands = [
+        line.strip()
+        for block in _fenced_blocks(_read("README.md"), "powershell")
+        for line in block.splitlines()
+        if "install-windows.ps1" in line and "-CheckOnly" in line
+    ]
+    documented = next(command for command in commands if command.startswith(".\\scripts"))
+    isolated_data_root = tmp_path / "README DataRoot"
+    executable = documented.replace(
+        '"D:\\PaperFlowData"', _powershell_literal(str(isolated_data_root))
+    ).replace(
+        '"$env:USERPROFILE\\Documents\\Obsidian Vault"',
+        _powershell_literal(str(setup["vault"])),
+    )
+    before = _snapshot(tmp_path)
+
+    result = subprocess.run(
+        [
+            str(setup["powershell"]),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            executable,
+        ],
+        cwd=Path(setup["project"]),
+        env=dict(setup["env"]),
+        input="n\n",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "DataRoot:" in result.stdout
+    assert _snapshot(tmp_path) == before
+    assert not isolated_data_root.exists()
+
+
 def test_readme_documents_existing_vault_and_safe_legacy_migration():
     text = _read("README.md")
+    install = _markdown_section(text, "克隆与安装")
+    config = _markdown_section(text, "本地配置")
 
-    assert r'-VaultPath "$env:USERPROFILE\Documents\Obsidian Vault"' in text
-    assert ("C:" + r"\Users\admin\Documents\Obsidian Vault") in text
-    assert ("C:" + r"\Users\you") not in text
-    assert "Vault 位于其他位置的电脑请修改" in text
-    assert "也可以提供另一个已存在的 Vault" in text
-    assert "Vault 是用户内容" in text
-    assert "不会作为缓存移动" in text
-    assert "逐字节复制" in text
-    assert "在迁移提交之前发生的任何失败" in text
-    assert "包括配置复制、wrapper 创建、doctor、PATH 持久化或写入后读回核对" in text
-    assert "都不会删除精确的旧版 wrapper/config" in text
-    assert "拒绝 PATH 迁移也会保留它们" in text
-    assert "只清理旧位置中精确匹配的 wrapper 和 config.toml" in text
-    assert r"%LOCALAPPDATA%\PaperFlow\bin\paperflow.cmd" in text
-    assert r"%APPDATA%\PaperFlow\config.toml" in text
-    assert "未知相邻文件始终保留" in text
+    assert r'-VaultPath "$env:USERPROFILE\Documents\Obsidian Vault"' in install
+    assert "按当前用户分别展开" in install
+    assert "Vault 位于其他位置的电脑请修改" in install
+    assert "也可以提供另一个已存在的 Vault" in install
+    assert "Vault 是用户内容" in install
+    assert "不会作为缓存移动" in install
+    assert "仅在新的 DataRoot config 不存在时" in install
+    assert "逐字节复制" in install
+    assert "已存在的目标 config 会原样保留" in install
+    assert "PATH 替换成功并经写入后读回验证" in install
+    assert "PATH 已经精确指向新的 bin 且经读回验证" in install
+    assert "在迁移提交之前发生的任何失败" in install
+    assert "包括配置复制、wrapper 创建、doctor、PATH 持久化或写入后读回核对" in install
+    assert "都不会删除精确的旧版 wrapper/config" in install
+    assert "拒绝 PATH 迁移也会保留它们" in install
+    assert "只清理旧位置中精确匹配的 wrapper 和 config.toml" in install
+    assert r"%LOCALAPPDATA%\PaperFlow\bin\paperflow.cmd" in install
+    assert r"%APPDATA%\PaperFlow\config.toml" in install
+    assert "未知相邻文件始终保留" in install
+    assert 'vault_path = "D:\\\\ObsidianVault"' in config
+    assert "TOML 不会展开环境变量" in config
+    assert "实际绝对 Vault 路径" in config
+
+
+def test_readme_has_no_concrete_windows_user_profile_path():
+    text = _read("README.md")
+
+    concrete_profile = re.compile(
+        r"(?i)(?<![A-Za-z0-9_])C:\\Users\\[^\\\s`\"']+"
+    )
+    assert concrete_profile.search(text) is None
+
+
+def test_readme_separates_local_and_cloud_privacy_retention():
+    text = _read("README.md")
+    privacy = _markdown_section(text, "隐私边界")
+
+    assert "本地模式" in privacy
+    assert "本地元数据和报告" in privacy
+    assert "保留在本机" in privacy
+    assert "GitHub Actions 云端模式" in privacy
+    assert "GitHub 托管 runner" in privacy
+    assert "JSON/stdout" in privacy
+    assert "Actions 日志" in privacy
+    assert "GitHub 的日志保留策略" in privacy
+    assert "邮件内容" in privacy
+    assert "发件人和收件人邮箱" in privacy
+    assert "Secrets 不会被有意打印" in privacy
+    assert "更强隐私" in privacy
+    assert "本地调度并关闭邮件" in privacy
+    assert "减少 workflow 输出" in privacy
+    assert "不提供 Web UI、向量检索或云端持久化" not in text
+    assert "元数据和报告文件都保留在本地" not in text
 
 
 def test_readme_documents_upgrade_uninstall_privacy_and_usage_contracts():
     text = _read("README.md")
+    privacy = _markdown_section(text, "隐私边界")
     vault_argument = r'-VaultPath "$env:USERPROFILE\Documents\Obsidian Vault"'
 
     assert (
@@ -1921,7 +2065,8 @@ def test_readme_documents_upgrade_uninstall_privacy_and_usage_contracts():
     assert "不要递归删除 Vault" in text
     assert "不要递归删除未知的旧版内容" in text
     assert "不使用 SQLite 或其他数据库" in text
-    assert "元数据和报告文件都保留在本地" in text
+    assert "本地元数据和报告" in privacy
+    assert "保留在本机" in privacy
     assert "论文提供方" in text
     assert "模型端点" in text
     for command in (

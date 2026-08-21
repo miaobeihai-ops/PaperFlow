@@ -4,7 +4,7 @@ PaperFlow 是一个免费、私有优先、本地优先且无数据库的论文�
 
 ## 用途与非目标
 
-适合个人在 Windows 上完成“发现 → 筛选 → Obsidian 报告/笔记 → Zotero 阅读”的轻量流程。它不使用 SQLite 或其他数据库，不提供 Web UI、向量检索或云端持久化，也不会自动修改 Zotero 数据库。PaperFlow 的元数据和报告文件都保留在本地；核心流程不要求购买服务或配置模型。Zotero AI Sidebar 是独立的可选项目，不随 PaperFlow 分发。
+适合个人在 Windows 上完成“发现 → 筛选 → Obsidian 报告/笔记 → Zotero 阅读”的轻量流程。它不使用 SQLite 或其他数据库，不提供 Web UI 或向量检索，也不会自动修改 Zotero 数据库。本地运行与 GitHub Actions 云端运行具有不同的数据边界，详见“隐私边界”。核心流程不要求购买服务或配置模型。Zotero AI Sidebar 是独立的可选项目，不随 PaperFlow 分发。
 
 ## Windows 前置条件
 
@@ -30,7 +30,7 @@ Set-Location "D:\PaperFlow"
 .\scripts\install-windows.ps1 -CheckOnly -DataRoot "D:\PaperFlowData" -VaultPath "$env:USERPROFILE\Documents\Obsidian Vault"
 ```
 
-在这台机器上，`$env:USERPROFILE\Documents\Obsidian Vault` 会解析为已经存在的 `C:\Users\admin\Documents\Obsidian Vault`；Vault 位于其他位置的电脑请修改 `-VaultPath`。`VaultPath` 必须是已存在目录，也可以提供另一个已存在的 Vault。这个 Vault 是用户内容，不是 PaperFlow 缓存，安装器不会作为缓存移动、复制或重新安置它。
+PowerShell 会把 `$env:USERPROFILE\Documents\Obsidian Vault` 按当前用户分别展开；Vault 位于其他位置的电脑请修改 `-VaultPath`。`VaultPath` 必须是已存在目录，也可以提供另一个已存在的 Vault。这个 Vault 是用户内容，不是 PaperFlow 缓存，安装器不会作为缓存移动、复制或重新安置它。
 
 前置条件已满足时正式安装。脚本会先展示检查表，修改用户 PATH 前还会再次询问：
 
@@ -47,7 +47,9 @@ Set-Location "D:\PaperFlow"
 
 安装器先按 `requirements.lock` 安装精确锁定的运行时与 setuptools 构建依赖，再以 `--no-deps --no-build-isolation` 安装 PaperFlow 本身，从而固定构建环境。使用 `-DataRoot` 时，这两个 pip 子进程临时使用 `PIP_NO_CACHE_DIR=1`，并把 `TEMP`、`TMP` 指向 `D:\PaperFlowData\tmp`；无论成功或失败，随后都会恢复安装进程原有的 TEMP、TMP 和 PIP_NO_CACHE_DIR。这里提供的是精确版本级可复现；为保持轻量，锁文件不包含制品哈希，不声称 hermetic 或 artifact-level 防篡改。安装末尾会直接运行只读 `paperflow --json doctor`；如果出现 warning，请按其 JSON 输出处理 required 检查。
 
-从旧版默认位置迁移到 `-DataRoot` 时，安装器会逐字节复制旧 `config.toml`，创建新 wrapper，再运行 doctor；只有 doctor 成功、用户同意 PATH 迁移且 PATH 写入后读回核对完全一致，才会提交迁移，并只清理旧位置中精确匹配的 wrapper 和 config.toml，即 `%LOCALAPPDATA%\PaperFlow\bin\paperflow.cmd` 与 `%APPDATA%\PaperFlow\config.toml`。在迁移提交之前发生的任何失败，包括配置复制、wrapper 创建、doctor、PATH 持久化或写入后读回核对，都不会删除精确的旧版 wrapper/config；拒绝 PATH 迁移也会保留它们。未知相邻文件始终保留，安装器不会递归清空旧目录。
+从旧版默认位置迁移到 `-DataRoot` 时，仅在新的 DataRoot config 不存在时，安装器才会把旧 `config.toml` 逐字节复制过去；已存在的目标 config 会原样保留。安装器随后创建新 wrapper 并运行 doctor。doctor 成功后，只有满足以下任一分支才会提交迁移并清理旧文件：PATH 替换成功并经写入后读回验证，或 PATH 已经精确指向新的 bin 且经读回验证。提交后只清理旧位置中精确匹配的 wrapper 和 config.toml，即 `%LOCALAPPDATA%\PaperFlow\bin\paperflow.cmd` 与 `%APPDATA%\PaperFlow\config.toml`。
+
+在迁移提交之前发生的任何失败，包括配置复制、wrapper 创建、doctor、PATH 持久化或写入后读回核对，都不会删除精确的旧版 wrapper/config；拒绝 PATH 迁移也会保留它们。未知相邻文件始终保留，安装器不会递归清空旧目录。
 
 若希望安装器通过 winget 补齐 Git、Python、Zotero 或 Obsidian，显式添加 `-InstallMissing`。每项安装仍受 PowerShell `ShouldProcess` 控制；不加此参数就绝不安装软件。
 
@@ -65,10 +67,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps
 
 使用上述 `-DataRoot` 正式安装且 `VaultPath` 有效时，会写入 `D:\PaperFlowData\config\config.toml`。也可参考以下内容手动编辑：
 
-已有 config.toml 会逐字节保留，重新安装不会覆盖 keywords、timezone 或其他用户修改。
+已有 config.toml 会逐字节保留，重新安装不会覆盖 keywords、timezone 或其他用户修改。TOML 不会展开环境变量，因此手动配置时必须把下面的中性示例替换为你的实际绝对 Vault 路径。
 
 ```toml
-vault_path = "C:\\Users\\admin\\Documents\\Obsidian Vault"
+vault_path = "D:\\ObsidianVault"
 top_n = 10
 timezone = "Asia/Hong_Kong"
 history_reports = 30
@@ -122,7 +124,7 @@ paperflow --json daily --email --no-write
 
 ## GitHub Actions 云端邮件
 
-仓库自带 `.github/workflows/daily.yml`，定时任务无状态运行。到 GitHub 仓库的 Settings → Secrets and variables → Actions 新建三个 Secrets：
+仓库自带 `.github/workflows/daily.yml`。任务本身不创建数据库或上传报告 Artifact，但会在 GitHub 托管 runner 上处理论文元数据，并可能通过日志和邮件留下副本；具体边界见下一节。到 GitHub 仓库的 Settings → Secrets and variables → Actions 新建三个 Secrets：
 
 - `PAPERFLOW_GMAIL_ADDRESS`：发件 Gmail 地址。
 - `PAPERFLOW_GMAIL_APP_PASSWORD`：Google 账户生成的 App Password，不是登录密码。
@@ -139,10 +141,11 @@ paperflow --json daily --email --no-write
 
 ## 隐私边界
 
-- 使用 `-DataRoot` 时，本地配置、cache、tmp 与 wrapper 只保存在所选数据根目录；Obsidian 内容只保存在你指定的现有 Vault。
-- 云端任务只读取 GitHub Secrets，不上传报告 Artifact，也不使用数据库或 SQLite。
-- 安装器不读取或采集 Gmail Secrets，不接触 `zotero.sqlite`，不读取 AI Sidebar 密钥。
-- 本地发现流程的网络访问限于 Hugging Face、arXiv 等论文提供方；只有用户另行配置相关功能时才会访问模型端点。邮件模式会额外连接 Gmail SMTP。PaperFlow 本身不要求付费模型或付费数据库。
+- **本地模式**：使用 `-DataRoot` 时，配置、cache、tmp 与 wrapper 位于所选数据根目录；本地元数据和报告写入你指定的 Vault 并保留在本机。本地发现流程的网络访问限于 Hugging Face、arXiv 等论文提供方，以及用户自行配置的模型端点；启用邮件时还会连接 Gmail SMTP。
+- **GitHub Actions 云端模式**：计划任务在 GitHub 托管 runner 上处理论文元数据。即使 workflow 不上传报告 Artifact、也不使用 SQLite 或其他数据库，JSON/stdout 中的论文详情仍可能进入 Actions 日志，并按 GitHub 的日志保留策略留存；发送的邮件内容会持续存在于发件人和收件人邮箱。
+- GitHub Secrets 用于运行时认证；PaperFlow 和随附 workflow 不会有意输出凭据，Secrets 不会被有意打印。仍应避免把真实 Secret 写入仓库、Issue、配置示例或调试输出。
+- 如需更强隐私，优先使用本地调度并关闭邮件；若仍使用云端任务，可减少 workflow 输出，以降低 Actions 日志中的论文详情。本文只说明该选项，本次文档更新不修改 workflow。
+- 安装器不读取或采集 Gmail Secrets，不接触 `zotero.sqlite`，不读取 AI Sidebar 密钥。PaperFlow 本身不要求付费模型或付费数据库。
 
 ## 升级与卸载
 
