@@ -460,6 +460,84 @@ def test_valid_data_root_adds_required_checks_and_uses_its_config(tmp_path):
     assert calls["dir"][temp_path] == 1
 
 
+def test_data_root_tilde_uses_only_the_injected_user_profile(monkeypatch, tmp_path):
+    doctor = _doctor()
+    process_home = tmp_path / "ProcessHome"
+    injected_home = tmp_path / "InjectedHome"
+    home = injected_home / "PaperFlow"
+    config_path = home / "config" / "config.toml"
+    vault_path = tmp_path / "Vault"
+    config_path.parent.mkdir(parents=True)
+    vault_path.mkdir()
+    _valid_config(config_path, vault_path)
+    monkeypatch.setenv("USERPROFILE", str(process_home))
+    monkeypatch.setenv("HOME", str(process_home))
+
+    checks = _by_name(
+        doctor.run_checks(
+            skill_path=tmp_path / "missing-skill.md",
+            which=lambda _command: None,
+            environ={
+                "PAPERFLOW_HOME": "~/PaperFlow",
+                "USERPROFILE": str(injected_home),
+            },
+            python_version=(3, 11, 0),
+        )
+    )
+
+    assert checks["DataRoot"].ok is True
+    assert checks["Configuration"].ok is True
+    assert checks["Vault"].ok is True
+
+
+def test_data_root_tilde_without_injected_home_is_invalid_and_sanitized(tmp_path):
+    doctor = _doctor()
+
+    checks = _by_name(
+        doctor.run_checks(
+            skill_path=tmp_path / "missing-skill.md",
+            which=lambda _command: None,
+            environ={"PAPERFLOW_HOME": "~/PRIVATE_HOME_SENTINEL"},
+            python_version=(3, 11, 0),
+        )
+    )
+
+    assert checks["DataRoot"].ok is False
+    assert checks["Configuration"].ok is False
+    assert "PRIVATE_HOME_SENTINEL" not in " ".join(
+        check.message for check in checks.values()
+    )
+
+
+def test_doctor_delegates_data_root_validation_to_shared_resolver(
+    monkeypatch, tmp_path
+):
+    doctor = _doctor()
+    home = tmp_path / "ResolvedHome"
+    home.mkdir()
+    environ = {"PAPERFLOW_HOME": "ignored-by-spy"}
+    calls = []
+
+    def resolve(injected_environ, *, path_exists, path_is_dir):
+        calls.append((injected_environ, path_exists, path_is_dir))
+        return home
+
+    monkeypatch.setattr(doctor, "resolve_paperflow_home", resolve)
+
+    checks = _by_name(
+        doctor.run_checks(
+            skill_path=tmp_path / "missing-skill.md",
+            which=lambda _command: None,
+            environ=environ,
+            python_version=(3, 11, 0),
+        )
+    )
+
+    assert checks["DataRoot"].ok is True
+    assert len(calls) == 1
+    assert calls[0][0] is environ
+
+
 def test_invalid_present_data_root_does_not_fall_back_or_leak_path(tmp_path):
     doctor = _doctor()
     private_home = tmp_path / "PRIVATE_HOME_SENTINEL"

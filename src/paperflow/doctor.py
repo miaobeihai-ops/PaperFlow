@@ -7,7 +7,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from paperflow.config import ConfigError, PaperFlowConfig, load_local_config
+from paperflow.config import (
+    ConfigError,
+    PaperFlowConfig,
+    load_local_config,
+    resolve_paperflow_home,
+)
 
 
 @dataclass(frozen=True)
@@ -43,23 +48,6 @@ def _cached_path_inspector(
         return results[path]
 
     return inspect
-
-
-def _valid_data_root(
-    raw_home: str,
-    path_exists: Callable[[Path], bool],
-    path_is_dir: Callable[[Path], bool],
-) -> Path | None:
-    home = Path(raw_home).expanduser()
-    if (
-        not raw_home
-        or "\n" in raw_home
-        or "\r" in raw_home
-        or not home.is_absolute()
-        or (path_exists(home) and not path_is_dir(home))
-    ):
-        return None
-    return home
 
 
 def run_checks(
@@ -99,10 +87,12 @@ def run_checks(
     data_root: Path | None = None
     data_root_is_valid = True
     if "PAPERFLOW_HOME" in env:
-        data_root = _valid_data_root(
-            env["PAPERFLOW_HOME"], path_exists, path_is_dir
-        )
-        data_root_is_valid = data_root is not None
+        try:
+            data_root = resolve_paperflow_home(
+                env, path_exists=path_exists, path_is_dir=path_is_dir
+            )
+        except ConfigError:
+            data_root_is_valid = False
         data_root_ok = (
             data_root is not None
             and path_exists(data_root)

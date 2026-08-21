@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tomllib
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,18 +24,39 @@ class PaperFlowConfig:
     mail_to: str | None = None
 
 
-def default_local_config_path() -> Path:
-    if "PAPERFLOW_HOME" in os.environ:
-        raw_home = os.environ["PAPERFLOW_HOME"]
-        home = Path(raw_home).expanduser()
-        if (
-            not raw_home
-            or "\n" in raw_home
-            or "\r" in raw_home
-            or not home.is_absolute()
-            or (home.exists() and not home.is_dir())
-        ):
+def resolve_paperflow_home(
+    environ: Mapping[str, str],
+    *,
+    path_exists: Callable[[Path], bool] = Path.exists,
+    path_is_dir: Callable[[Path], bool] = Path.is_dir,
+) -> Path | None:
+    """Resolve and validate PAPERFLOW_HOME using only supplied state."""
+    if "PAPERFLOW_HOME" not in environ:
+        return None
+
+    raw_home = environ["PAPERFLOW_HOME"]
+    if not raw_home or "\n" in raw_home or "\r" in raw_home:
+        raise ConfigError("PAPERFLOW_HOME must be an absolute path")
+
+    if raw_home == "~" or raw_home.startswith(("~/", "~\\")):
+        injected_home = environ.get("USERPROFILE") or environ.get("HOME")
+        if not injected_home:
             raise ConfigError("PAPERFLOW_HOME must be an absolute path")
+        suffix = raw_home[2:] if len(raw_home) > 1 else ""
+        home = Path(injected_home) / suffix
+    else:
+        home = Path(raw_home)
+
+    if not home.is_absolute() or (path_exists(home) and not path_is_dir(home)):
+        raise ConfigError("PAPERFLOW_HOME must be an absolute path")
+    return home
+
+
+def default_local_config_path() -> Path:
+    home = resolve_paperflow_home(
+        os.environ, path_exists=Path.exists, path_is_dir=Path.is_dir
+    )
+    if home is not None:
         return home / "config" / "config.toml"
 
     appdata = os.environ.get("APPDATA")

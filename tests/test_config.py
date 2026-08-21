@@ -1,8 +1,11 @@
 import json
+import os
 import tomllib
 from pathlib import Path
 
 import pytest
+
+import paperflow.config as config_module
 
 from paperflow.config import (
     ConfigError,
@@ -14,6 +17,153 @@ from paperflow.config import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _paperflow_home_resolver():
+    assert hasattr(config_module, "resolve_paperflow_home"), (
+        "config must expose the shared PAPERFLOW_HOME resolver"
+    )
+    return config_module.resolve_paperflow_home
+
+
+def test_resolve_paperflow_home_returns_none_when_variable_is_absent():
+    resolver = _paperflow_home_resolver()
+
+    assert (
+        resolver(
+            {},
+            path_exists=lambda _path: False,
+            path_is_dir=lambda _path: False,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("invalid_home", ["", "relative/path", "C:\\Paper\nFlow"])
+def test_resolve_paperflow_home_rejects_invalid_present_values(invalid_home):
+    resolver = _paperflow_home_resolver()
+
+    with pytest.raises(ConfigError, match="^PAPERFLOW_HOME must be an absolute path$"):
+        resolver(
+            {"PAPERFLOW_HOME": invalid_home},
+            path_exists=lambda _path: False,
+            path_is_dir=lambda _path: False,
+        )
+
+
+def test_resolve_paperflow_home_rejects_existing_file(tmp_path):
+    resolver = _paperflow_home_resolver()
+    home = tmp_path / "paperflow-home"
+    home.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="^PAPERFLOW_HOME must be an absolute path$"):
+        resolver(
+            {"PAPERFLOW_HOME": str(home)},
+            path_exists=Path.exists,
+            path_is_dir=Path.is_dir,
+        )
+
+
+def test_resolve_paperflow_home_accepts_existing_and_nonexistent_absolute_dirs(
+    tmp_path,
+):
+    resolver = _paperflow_home_resolver()
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    nonexistent = tmp_path / "nonexistent"
+
+    assert resolver(
+        {"PAPERFLOW_HOME": str(existing)},
+        path_exists=Path.exists,
+        path_is_dir=Path.is_dir,
+    ) == existing
+    assert resolver(
+        {"PAPERFLOW_HOME": str(nonexistent)},
+        path_exists=Path.exists,
+        path_is_dir=Path.is_dir,
+    ) == nonexistent
+
+
+@pytest.mark.parametrize("home_variable", ["USERPROFILE", "HOME"])
+def test_resolve_paperflow_home_expands_tilde_from_supplied_environment_only(
+    monkeypatch, tmp_path, home_variable
+):
+    resolver = _paperflow_home_resolver()
+    injected_user_home = tmp_path / "InjectedUser"
+    process_user_home = tmp_path / "ProcessUser"
+    monkeypatch.setenv("USERPROFILE", str(process_user_home))
+    monkeypatch.setenv("HOME", str(process_user_home))
+
+    resolved = resolver(
+        {"PAPERFLOW_HOME": "~/PaperFlow", home_variable: str(injected_user_home)},
+        path_exists=lambda _path: False,
+        path_is_dir=lambda _path: False,
+    )
+
+    assert resolved == injected_user_home / "PaperFlow"
+
+
+def test_resolve_paperflow_home_rejects_tilde_without_injected_home():
+    resolver = _paperflow_home_resolver()
+
+    with pytest.raises(ConfigError, match="^PAPERFLOW_HOME must be an absolute path$"):
+        resolver(
+            {"PAPERFLOW_HOME": "~/PaperFlow"},
+            path_exists=lambda _path: False,
+            path_is_dir=lambda _path: False,
+        )
+
+
+def test_resolve_paperflow_home_probes_each_path_once(tmp_path):
+    resolver = _paperflow_home_resolver()
+    home = tmp_path / "PaperFlowHome"
+    calls = {"exists": 0, "is_dir": 0}
+
+    def exists(path):
+        assert path == home
+        calls["exists"] += 1
+        return True
+
+    def is_dir(path):
+        assert path == home
+        calls["is_dir"] += 1
+        return True
+
+    assert resolver(
+        {"PAPERFLOW_HOME": str(home)},
+        path_exists=exists,
+        path_is_dir=is_dir,
+    ) == home
+    assert calls == {"exists": 1, "is_dir": 1}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
+@pytest.mark.parametrize("home", [r"C:\PaperFlow", r"\\server\share\PaperFlow"])
+def test_resolve_paperflow_home_accepts_windows_drive_and_unc_paths(home):
+    resolver = _paperflow_home_resolver()
+
+    assert resolver(
+        {"PAPERFLOW_HOME": home},
+        path_exists=lambda _path: False,
+        path_is_dir=lambda _path: False,
+    ) == Path(home)
+
+
+def test_default_local_config_path_delegates_to_shared_resolver(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / "ResolvedHome"
+    calls = []
+
+    def resolve(environ, *, path_exists, path_is_dir):
+        calls.append((environ, path_exists, path_is_dir))
+        return home
+
+    monkeypatch.setattr(config_module, "resolve_paperflow_home", resolve)
+    monkeypatch.setenv("PAPERFLOW_HOME", "ignored-by-spy")
+
+    assert default_local_config_path() == home / "config" / "config.toml"
+    assert calls == [(os.environ, Path.exists, Path.is_dir)]
 
 
 def test_default_local_config_path_prefers_absolute_paperflow_home(
