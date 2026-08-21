@@ -7,6 +7,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Test-AbsoluteWindowsPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ($Path -match '^[A-Za-z]:[\\/]') {
+        return $true
+    }
+    if ($Path -match '^\\\\[^\\/]+[\\/][^\\/]+(?:[\\/].*)?$') {
+        return $true
+    }
+    return $false
+}
+
 $DataRootSupplied = $PSBoundParameters.ContainsKey('DataRoot')
 if ($DataRootSupplied) {
     if ([string]::IsNullOrWhiteSpace($DataRoot)) {
@@ -15,8 +28,8 @@ if ($DataRootSupplied) {
     if ($DataRoot.Contains("`r") -or $DataRoot.Contains("`n")) {
         throw 'DataRoot cannot contain CR or LF characters.'
     }
-    if (-not [System.IO.Path]::IsPathRooted($DataRoot)) {
-        throw 'DataRoot must be an absolute path.'
+    if (-not (Test-AbsoluteWindowsPath -Path $DataRoot)) {
+        throw 'DataRoot must be an absolute Windows path (drive-qualified or UNC).'
     }
     try {
         $ResolvedDataRoot = [System.IO.Path]::GetFullPath($DataRoot)
@@ -212,6 +225,15 @@ function Set-PaperFlowUserPath {
     [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
 }
 
+function Assert-PersistedPaperFlowUserPath {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedValue)
+
+    $persistedValue = [string](Get-PaperFlowUserPath)
+    if (-not [System.StringComparer]::Ordinal.Equals($persistedValue, $ExpectedValue)) {
+        throw 'User PATH did not persist the intended PaperFlow migration; exact legacy files were preserved.'
+    }
+}
+
 function Invoke-SelectedPython {
     param([string[]]$Arguments)
     & $script:PythonCommand @script:PythonPrefixArguments @Arguments
@@ -343,7 +365,7 @@ function Copy-FileBytesAtomically {
     $configTempPath = Join-Path $destinationDirectory ('.paperflow-config-' + [guid]::NewGuid().ToString('N') + '.tmp')
     try {
         [System.IO.File]::WriteAllBytes($configTempPath, [System.IO.File]::ReadAllBytes($Source))
-        Move-Item -LiteralPath $configTempPath -Destination $Destination -Force
+        [System.IO.File]::Move($configTempPath, $Destination)
     }
     finally {
         if (Test-Path -LiteralPath $configTempPath -PathType Leaf) {
@@ -740,6 +762,7 @@ if ($DataRootSupplied) {
         if ($answer -match '^(?i:y|yes)$') {
             if ($PSCmdlet.ShouldProcess('User PATH', "Migrate PaperFlow bin to $BinDir")) {
                 Set-PaperFlowUserPath -Value $pathUpdate.Value
+                Assert-PersistedPaperFlowUserPath -ExpectedValue $pathUpdate.Value
                 $pathMigrationCommitted = $true
                 Write-Host 'User PATH migrated. Open a new terminal before running paperflow.'
             }
@@ -749,6 +772,7 @@ if ($DataRootSupplied) {
         }
     }
     else {
+        Assert-PersistedPaperFlowUserPath -ExpectedValue $pathUpdate.Value
         $pathMigrationCommitted = $true
         Write-Host 'PaperFlow bin directory is already correctly present in the user PATH.'
     }
@@ -760,6 +784,7 @@ else {
         if ($answer -match '^(?i:y|yes)$') {
             if ($PSCmdlet.ShouldProcess('User PATH', "Add $BinDir")) {
                 Set-PaperFlowUserPath -Value $pathUpdate.Value
+                Assert-PersistedPaperFlowUserPath -ExpectedValue $pathUpdate.Value
                 Write-Host 'User PATH updated. Open a new terminal before running paperflow.'
             }
         }

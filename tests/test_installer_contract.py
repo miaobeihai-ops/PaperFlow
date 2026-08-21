@@ -303,6 +303,68 @@ def _invoke_set_path_function(
     return json.loads(result.stdout)
 
 
+def _invoke_installer_predicate(function_name: str, value: str) -> bool:
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    command = (
+        "$ErrorActionPreference = 'Stop'; $tokens = $null; $errors = $null; "
+        "$ast = [System.Management.Automation.Language.Parser]::ParseFile("
+        + _powershell_literal(str(INSTALLER))
+        + ", [ref]$tokens, [ref]$errors); "
+        "$definition = $ast.Find({ param($node) $node -is "
+        "[System.Management.Automation.Language.FunctionDefinitionAst] -and "
+        f"$node.Name -eq {_powershell_literal(function_name)} }}, $true); "
+        "if ($null -eq $definition) { throw 'installer function not found' }; "
+        ". ([scriptblock]::Create($definition.Extent.Text)); "
+        f"& {_powershell_literal(function_name)} -Path {_powershell_literal(value)} "
+        "| ConvertTo-Json -Compress"
+    )
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return json.loads(result.stdout)
+
+
+def _invoke_atomic_config_copy(source: Path, destination: Path):
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    command = (
+        "$ErrorActionPreference = 'Stop'; $tokens = $null; $errors = $null; "
+        "$ast = [System.Management.Automation.Language.Parser]::ParseFile("
+        + _powershell_literal(str(INSTALLER))
+        + ", [ref]$tokens, [ref]$errors); "
+        "$definition = $ast.Find({ param($node) $node -is "
+        "[System.Management.Automation.Language.FunctionDefinitionAst] -and "
+        "$node.Name -eq 'Copy-FileBytesAtomically' }, $true); "
+        "if ($null -eq $definition) { throw 'installer function not found' }; "
+        ". ([scriptblock]::Create($definition.Extent.Text)); "
+        "Copy-FileBytesAtomically -Source "
+        + _powershell_literal(str(source))
+        + " -Destination "
+        + _powershell_literal(str(destination))
+    )
+    return subprocess.run(
+        [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+
+
 def test_installer_declares_safe_preview_first_interface():
     text = INSTALLER.read_text(encoding="utf-8")
 
@@ -348,9 +410,44 @@ def test_check_only_resolves_data_root_without_mutation(tmp_path):
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
 @pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (r"C:\PaperFlow Data", True),
+        (r"\\server\share\PaperFlow Data", True),
+        (r"C:drive-relative", False),
+        (r"\root-relative", False),
+        ("relative", False),
+    ],
+)
+def test_absolute_windows_path_predicate(value, expected):
+    assert _invoke_installer_predicate("Test-AbsoluteWindowsPath", value) is expected
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_atomic_config_copy_collision_preserves_target_and_cleans_temp(tmp_path):
+    source = tmp_path / "legacy-config.toml"
+    destination = tmp_path / "config" / "config.toml"
+    source_bytes = b'vault_path = "legacy"\r\n\x00legacy-bytes'
+    target_bytes = b'vault_path = "concurrent"\n'
+    source.write_bytes(source_bytes)
+    destination.parent.mkdir()
+    destination.write_bytes(target_bytes)
+
+    result = _invoke_atomic_config_copy(source, destination)
+
+    assert result.returncode != 0
+    assert destination.read_bytes() == target_bytes
+    assert source.read_bytes() == source_bytes
+    assert not list(destination.parent.glob(".paperflow-config-*.tmp"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize(
     ("kind", "expected_message"),
     [
-        ("relative", "DataRoot must be an absolute path"),
+        ("relative", "DataRoot must be an absolute Windows path"),
+        ("drive-relative", "DataRoot must be an absolute Windows path"),
+        ("root-relative", "DataRoot must be an absolute Windows path"),
         ("file", "DataRoot must be a normal directory"),
         ("reparse", "DataRoot must not be a reparse point"),
     ],
@@ -363,6 +460,10 @@ def test_invalid_data_root_is_rejected_before_mutation(
     )
     if kind == "relative":
         data_root = "relative-data-root"
+    elif kind == "drive-relative":
+        data_root = r"C:drive-relative-data-root"
+    elif kind == "root-relative":
+        data_root = r"\root-relative-data-root"
     elif kind == "file":
         path = tmp_path / "data-root-file"
         path.write_text("not a directory", encoding="utf-8")
@@ -1132,7 +1233,9 @@ def _preprovision_fake_venv(setup: dict[str, object]) -> None:
     shutil.copy2(Path(sys.executable).parents[1] / "pyvenv.cfg", venv / "pyvenv.cfg")
 
 
-def _use_file_backed_user_path(setup: dict[str, object], value: str) -> Path:
+def _use_file_backed_user_path(
+    setup: dict[str, object], value: str, *, persist_writes: bool = True
+) -> Path:
     path_file = Path(setup["project"]) / "isolated-user-path.txt"
     path_file.write_text(value, encoding="utf-8")
     installer = Path(setup["installer"])
@@ -1146,6 +1249,11 @@ function Set-PaperFlowUserPath {
 
     [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
 }"""
+    setter_body = (
+        f"[System.IO.File]::WriteAllText({_powershell_literal(str(path_file))}, $Value)"
+        if persist_writes
+        else "$null = $Value"
+    )
     replacement = f"""function Get-PaperFlowUserPath {{
     return [System.IO.File]::ReadAllText({_powershell_literal(str(path_file))})
 }}
@@ -1153,7 +1261,7 @@ function Set-PaperFlowUserPath {
 function Set-PaperFlowUserPath {{
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
 
-    [System.IO.File]::WriteAllText({_powershell_literal(str(path_file))}, $Value)
+    {setter_body}
 }}"""
     assert original in text
     installer.write_text(text.replace(original, replacement), encoding="utf-8")
@@ -1271,6 +1379,32 @@ def test_data_root_path_decline_preserves_exact_legacy_files_and_path(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert current_path == initial_path
+    assert legacy_wrapper.read_bytes() == wrapper_bytes
+    assert legacy_config.read_bytes() == config_bytes
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_data_root_path_persistence_mismatch_preserves_exact_legacy_files(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    legacy_wrapper, legacy_config, wrapper_bytes, config_bytes = _write_legacy_install(
+        setup
+    )
+    initial_path = rf"C:\Other;{legacy_wrapper.parent}"
+    path_file = _use_file_backed_user_path(
+        setup, initial_path, persist_writes=False
+    )
+
+    result = _run_isolated(
+        setup, "-DataRoot", str(data_root), input_text="y\n"
+    )
+
+    assert result.returncode != 0
+    assert "User PATH did not persist the intended PaperFlow migration" in result.stderr
+    assert path_file.read_text(encoding="utf-8") == initial_path
     assert legacy_wrapper.read_bytes() == wrapper_bytes
     assert legacy_config.read_bytes() == config_bytes
 
