@@ -1863,15 +1863,15 @@ def test_readme_documents_executable_flow_in_required_order():
 
 def test_readme_documents_data_root_install_layout_and_scoped_environment():
     text = _read("README.md")
-    existing_vault = "C:" + r"\Users\you\Documents\Obsidian\ResearchVault"
+    vault_argument = r'-VaultPath "$env:USERPROFILE\Documents\Obsidian Vault"'
 
     assert (
         '.\\scripts\\install-windows.ps1 -CheckOnly -DataRoot "D:\\PaperFlowData" '
-        f'-VaultPath "{existing_vault}"'
+        f"{vault_argument}"
     ) in text
     assert (
         '.\\scripts\\install-windows.ps1 -DataRoot "D:\\PaperFlowData" '
-        f'-VaultPath "{existing_vault}"'
+        f"{vault_argument}"
     ) in text
     for path in (
         r"D:\PaperFlow\.venv",
@@ -1892,29 +1892,31 @@ def test_readme_documents_data_root_install_layout_and_scoped_environment():
 def test_readme_documents_existing_vault_and_safe_legacy_migration():
     text = _read("README.md")
 
-    assert ("C:" + r"\Users\you\Documents\Obsidian\ResearchVault") in text
+    assert r'-VaultPath "$env:USERPROFILE\Documents\Obsidian Vault"' in text
+    assert ("C:" + r"\Users\admin\Documents\Obsidian Vault") in text
+    assert ("C:" + r"\Users\you") not in text
+    assert "Vault 位于其他位置的电脑请修改" in text
     assert "也可以提供另一个已存在的 Vault" in text
     assert "Vault 是用户内容" in text
     assert "不会作为缓存移动" in text
     assert "逐字节复制" in text
-    assert "doctor" in text
-    assert "PATH 写入后读回核对" in text
+    assert "在迁移提交之前发生的任何失败" in text
+    assert "包括配置复制、wrapper 创建、doctor、PATH 持久化或写入后读回核对" in text
+    assert "都不会删除精确的旧版 wrapper/config" in text
+    assert "拒绝 PATH 迁移也会保留它们" in text
     assert "只清理旧位置中精确匹配的 wrapper 和 config.toml" in text
     assert r"%LOCALAPPDATA%\PaperFlow\bin\paperflow.cmd" in text
     assert r"%APPDATA%\PaperFlow\config.toml" in text
-    assert "拒绝 PATH 迁移" in text
-    assert "失败" in text
-    assert "保留旧位置的已知文件" in text
-    assert "未知相邻文件" in text
+    assert "未知相邻文件始终保留" in text
 
 
 def test_readme_documents_upgrade_uninstall_privacy_and_usage_contracts():
     text = _read("README.md")
-    existing_vault = "C:" + r"\Users\you\Documents\Obsidian\ResearchVault"
+    vault_argument = r'-VaultPath "$env:USERPROFILE\Documents\Obsidian Vault"'
 
     assert (
         '.\\scripts\\install-windows.ps1 -DataRoot "D:\\PaperFlowData" '
-        f'-VaultPath "{existing_vault}"'
+        f"{vault_argument}"
     ) in text
     assert "不要递归删除 Vault" in text
     assert "不要递归删除未知的旧版内容" in text
