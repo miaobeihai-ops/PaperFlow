@@ -141,9 +141,9 @@ paperflow --json daily --email --no-write
 
 ## 隐私边界
 
-- **本地模式**：使用 `-DataRoot` 时，配置、cache、tmp 与 wrapper 位于所选数据根目录；本地元数据和报告写入你指定的 Vault 并保留在本机。本地发现流程的网络访问限于 Hugging Face、arXiv 等论文提供方，以及用户自行配置的模型端点；启用邮件时还会连接 Gmail SMTP。
+- **本地模式**：使用 `-DataRoot` 时，配置、cache、tmp 与 wrapper 位于所选数据根目录；本地元数据和报告写入你指定的 Vault 并保留在本机。PaperFlow 的网络访问限于 Hugging Face 和 arXiv 等论文提供方，并且仅在启用邮件时连接 Gmail SMTP。PaperFlow 本身没有模型客户端；独立可选的 AI Sidebar 可使用它自己的配置访问模型端点，该访问不属于 PaperFlow 自身的进程或配置。
 - **GitHub Actions 云端模式**：计划任务在 GitHub 托管 runner 上处理论文元数据。即使 workflow 不上传报告 Artifact、也不使用 SQLite 或其他数据库，JSON/stdout 中的论文详情仍可能进入 Actions 日志，并按 GitHub 的日志保留策略留存；发送的邮件内容会持续存在于发件人和收件人邮箱。
-- GitHub Secrets 用于运行时认证；PaperFlow 和随附 workflow 不会有意输出凭据，Secrets 不会被有意打印。仍应避免把真实 Secret 写入仓库、Issue、配置示例或调试输出。
+- GitHub Secrets 会向 workflow 注入 SMTP 凭据和私有运行时配置（`PAPERFLOW_PRIVATE_CONFIG_JSON`），并非仅用于认证；PaperFlow 和随附 workflow 不会有意输出这些值，Secrets 不会被有意打印。仍应避免把真实 Secret 写入仓库、Issue、配置示例或调试输出。
 - 如需更强隐私，优先使用本地调度并关闭邮件；若仍使用云端任务，可减少 workflow 输出，以降低 Actions 日志中的论文详情。本文只说明该选项，本次文档更新不修改 workflow。
 - 安装器不读取或采集 Gmail Secrets，不接触 `zotero.sqlite`，不读取 AI Sidebar 密钥。PaperFlow 本身不要求付费模型或付费数据库。
 

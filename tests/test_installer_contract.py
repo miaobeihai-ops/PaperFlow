@@ -2038,6 +2038,12 @@ def test_readme_separates_local_and_cloud_privacy_retention():
     assert "本地模式" in privacy
     assert "本地元数据和报告" in privacy
     assert "保留在本机" in privacy
+    assert "Hugging Face 和 arXiv" in privacy
+    assert "仅在启用邮件时连接 Gmail SMTP" in privacy
+    assert "PaperFlow 本身没有模型客户端" in privacy
+    assert "AI Sidebar" in privacy
+    assert "模型端点" in privacy
+    assert "不属于 PaperFlow 自身的进程或配置" in privacy
     assert "GitHub Actions 云端模式" in privacy
     assert "GitHub 托管 runner" in privacy
     assert "JSON/stdout" in privacy
@@ -2045,10 +2051,15 @@ def test_readme_separates_local_and_cloud_privacy_retention():
     assert "GitHub 的日志保留策略" in privacy
     assert "邮件内容" in privacy
     assert "发件人和收件人邮箱" in privacy
+    assert "SMTP 凭据" in privacy
+    assert "PAPERFLOW_PRIVATE_CONFIG_JSON" in privacy
+    assert "私有运行时配置" in privacy
     assert "Secrets 不会被有意打印" in privacy
     assert "更强隐私" in privacy
     assert "本地调度并关闭邮件" in privacy
     assert "减少 workflow 输出" in privacy
+    assert "用户自行配置的模型端点" not in privacy
+    assert "GitHub Secrets 用于运行时认证" not in privacy
     assert "不提供 Web UI、向量检索或云端持久化" not in text
     assert "元数据和报告文件都保留在本地" not in text
 
@@ -2068,7 +2079,9 @@ def test_readme_documents_upgrade_uninstall_privacy_and_usage_contracts():
     assert "本地元数据和报告" in privacy
     assert "保留在本机" in privacy
     assert "论文提供方" in text
-    assert "模型端点" in text
+    assert "PaperFlow 本身没有模型客户端" in privacy
+    assert "AI Sidebar" in privacy
+    assert "不属于 PaperFlow 自身的进程或配置" in privacy
     for command in (
         "paperflow doctor",
         'paperflow search "3d reconstruction"',
