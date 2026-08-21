@@ -4,10 +4,49 @@ from pathlib import Path
 
 import pytest
 
-from paperflow.config import ConfigError, _build, load_cloud_config, load_local_config
+from paperflow.config import (
+    ConfigError,
+    _build,
+    default_local_config_path,
+    load_cloud_config,
+    load_local_config,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_default_local_config_path_prefers_absolute_paperflow_home(
+    monkeypatch, tmp_path
+):
+    paperflow_home = tmp_path / "PaperFlowHome"
+    monkeypatch.setenv("PAPERFLOW_HOME", str(paperflow_home))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData"))
+
+    assert default_local_config_path() == paperflow_home / "config" / "config.toml"
+
+
+def test_default_local_config_path_uses_appdata_when_paperflow_home_is_absent(
+    monkeypatch, tmp_path
+):
+    appdata = tmp_path / "AppData"
+    monkeypatch.delenv("PAPERFLOW_HOME", raising=False)
+    monkeypatch.setenv("APPDATA", str(appdata))
+
+    assert default_local_config_path() == appdata / "PaperFlow" / "config.toml"
+
+
+@pytest.mark.parametrize("invalid_home", ["", "relative/path", "C:\\Paper\nFlow"])
+def test_default_local_config_path_rejects_invalid_paperflow_home(
+    monkeypatch, tmp_path, invalid_home
+):
+    monkeypatch.setenv("PAPERFLOW_HOME", invalid_home)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData"))
+
+    with pytest.raises(ConfigError) as exc_info:
+        default_local_config_path()
+
+    assert str(exc_info.value) == "PAPERFLOW_HOME must be an absolute path"
 
 
 def test_load_local_config(tmp_path):

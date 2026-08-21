@@ -24,6 +24,18 @@ class PaperFlowConfig:
 
 
 def default_local_config_path() -> Path:
+    if "PAPERFLOW_HOME" in os.environ:
+        raw_home = os.environ["PAPERFLOW_HOME"]
+        home = Path(raw_home).expanduser()
+        if (
+            not raw_home
+            or "\n" in raw_home
+            or "\r" in raw_home
+            or not home.is_absolute()
+        ):
+            raise ConfigError("PAPERFLOW_HOME must be an absolute path")
+        return home / "config" / "config.toml"
+
     appdata = os.environ.get("APPDATA")
     if not appdata:
         raise ConfigError("APPDATA is not set")
