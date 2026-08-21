@@ -2,10 +2,40 @@
 param(
     [switch]$CheckOnly,
     [switch]$InstallMissing,
-    [string]$VaultPath
+    [string]$VaultPath,
+    [string]$DataRoot
 )
 
 $ErrorActionPreference = 'Stop'
+$DataRootSupplied = $PSBoundParameters.ContainsKey('DataRoot')
+if ($DataRootSupplied) {
+    if ([string]::IsNullOrWhiteSpace($DataRoot)) {
+        throw 'DataRoot must be a non-empty absolute path.'
+    }
+    if ($DataRoot.Contains("`r") -or $DataRoot.Contains("`n")) {
+        throw 'DataRoot cannot contain CR or LF characters.'
+    }
+    if (-not [System.IO.Path]::IsPathRooted($DataRoot)) {
+        throw 'DataRoot must be an absolute path.'
+    }
+    try {
+        $ResolvedDataRoot = [System.IO.Path]::GetFullPath($DataRoot)
+    }
+    catch {
+        throw "DataRoot is not a valid absolute path: $($_.Exception.Message)"
+    }
+    if (Test-Path -LiteralPath $ResolvedDataRoot) {
+        $dataRootItem = Get-Item -LiteralPath $ResolvedDataRoot -Force
+        $dataRootIsReparsePoint = ($dataRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        if ($dataRootIsReparsePoint) {
+            throw "DataRoot must not be a reparse point: $ResolvedDataRoot"
+        }
+        if (-not $dataRootItem.PSIsContainer -or -not ($dataRootItem -is [System.IO.DirectoryInfo])) {
+            throw "DataRoot must be a normal directory when it already exists: $ResolvedDataRoot"
+        }
+    }
+}
+
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $VenvDir = Join-Path $ProjectRoot '.venv'
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
@@ -14,10 +44,26 @@ $VenvPaperFlowCmd = Join-Path $VenvDir 'Scripts\paperflow.cmd'
 $VenvPaperFlow = $VenvPaperFlowExe
 $VenvPaperFlowDoctor = $VenvPaperFlowExe
 $RequirementsLock = Join-Path $ProjectRoot 'requirements.lock'
-$PaperFlowHome = Join-Path $env:LOCALAPPDATA 'PaperFlow'
-$BinDir = Join-Path $PaperFlowHome 'bin'
+$LegacyPaperFlowHome = Join-Path $env:LOCALAPPDATA 'PaperFlow'
+$LegacyBinDir = Join-Path $LegacyPaperFlowHome 'bin'
+$LegacyWrapperPath = Join-Path $LegacyBinDir 'paperflow.cmd'
+$LegacyConfigDir = Join-Path $env:APPDATA 'PaperFlow'
+$LegacyConfigPath = Join-Path $LegacyConfigDir 'config.toml'
+if ($DataRootSupplied) {
+    $PaperFlowHome = $ResolvedDataRoot
+    $BinDir = Join-Path $ResolvedDataRoot 'bin'
+    $ConfigDir = Join-Path $ResolvedDataRoot 'config'
+    $CacheDir = Join-Path $ResolvedDataRoot 'cache'
+    $TempDir = Join-Path $ResolvedDataRoot 'tmp'
+}
+else {
+    $PaperFlowHome = $LegacyPaperFlowHome
+    $BinDir = $LegacyBinDir
+    $ConfigDir = $LegacyConfigDir
+    $CacheDir = $null
+    $TempDir = $null
+}
 $WrapperPath = Join-Path $BinDir 'paperflow.cmd'
-$ConfigDir = Join-Path $env:APPDATA 'PaperFlow'
 $ConfigPath = Join-Path $ConfigDir 'config.toml'
 $SkillSource = Join-Path $ProjectRoot '.agents\skills\paperflow'
 $SkillTarget = Join-Path $env:USERPROFILE '.agents\skills\paperflow'
@@ -256,9 +302,169 @@ function Assert-RegularFileOrMissing {
     }
 }
 
+function Assert-NormalDirectoryOrMissing {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if (Test-Path -LiteralPath $Path) {
+        $item = Get-Item -LiteralPath $Path -Force
+        $isReparsePoint = ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        if (-not $item.PSIsContainer -or -not ($item -is [System.IO.DirectoryInfo]) -or $isReparsePoint) {
+            throw "$Name must be a normal directory or not exist: $Path"
+        }
+    }
+}
+
+function Test-RegularNonReparseFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    $isReparsePoint = ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+    return (-not $item.PSIsContainer -and ($item -is [System.IO.FileInfo]) -and -not $isReparsePoint)
+}
+
+function Copy-FileBytesAtomically {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $sourceFullPath = [System.IO.Path]::GetFullPath($Source)
+    $destinationFullPath = [System.IO.Path]::GetFullPath($Destination)
+    if ([System.StringComparer]::OrdinalIgnoreCase.Equals($sourceFullPath, $destinationFullPath)) {
+        throw 'Refusing to migrate a PaperFlow config onto itself.'
+    }
+    $destinationDirectory = Split-Path -Parent $Destination
+    $configTempPath = Join-Path $destinationDirectory ('.paperflow-config-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [System.IO.File]::WriteAllBytes($configTempPath, [System.IO.File]::ReadAllBytes($Source))
+        Move-Item -LiteralPath $configTempPath -Destination $Destination -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $configTempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $configTempPath -Force
+        }
+    }
+}
+
+function Write-FileBytesAtomically {
+    param(
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes
+    )
+
+    $destinationDirectory = Split-Path -Parent $Destination
+    [System.IO.Directory]::CreateDirectory($destinationDirectory) | Out-Null
+    $tempPath = Join-Path $destinationDirectory ('.paperflow-restore-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [System.IO.File]::WriteAllBytes($tempPath, $Bytes)
+        Move-Item -LiteralPath $tempPath -Destination $Destination -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $tempPath -Force
+        }
+    }
+}
+
+function Remove-EmptyNormalDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    $isReparsePoint = ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+    if ($isReparsePoint -or @((Get-ChildItem -LiteralPath $Path -Force)).Count -ne 0) {
+        return
+    }
+    try {
+        Remove-Item -LiteralPath $Path -Force
+    }
+    catch {
+        Write-Warning "Could not remove empty legacy PaperFlow directory '$Path': $($_.Exception.Message)"
+    }
+}
+
+function Remove-LegacyPaperFlowFiles {
+    $candidates = @(
+        @{ Path = $LegacyWrapperPath; NewPath = $WrapperPath },
+        @{ Path = $LegacyConfigPath; NewPath = $ConfigPath }
+    )
+    $snapshots = @()
+    foreach ($candidate in $candidates) {
+        $legacyFullPath = [System.IO.Path]::GetFullPath($candidate.Path)
+        $newFullPath = [System.IO.Path]::GetFullPath($candidate.NewPath)
+        if ([System.StringComparer]::OrdinalIgnoreCase.Equals($legacyFullPath, $newFullPath) -or
+            -not (Test-RegularNonReparseFile -Path $candidate.Path)) {
+            continue
+        }
+        $backupPath = Join-Path (Split-Path -Parent $candidate.Path) ('.paperflow-legacy-' + [guid]::NewGuid().ToString('N') + '.bak')
+        $snapshots += [pscustomobject]@{
+            Path = $candidate.Path
+            BackupPath = $backupPath
+            Bytes = [System.IO.File]::ReadAllBytes($candidate.Path)
+        }
+    }
+
+    try {
+        foreach ($snapshot in $snapshots) {
+            Move-Item -LiteralPath $snapshot.Path -Destination $snapshot.BackupPath
+        }
+        foreach ($snapshot in $snapshots) {
+            Remove-Item -LiteralPath $snapshot.BackupPath -Force
+        }
+    }
+    catch {
+        $cleanupError = $_
+        foreach ($snapshot in $snapshots) {
+            try {
+                if (Test-Path -LiteralPath $snapshot.BackupPath -PathType Leaf) {
+                    if (-not (Test-Path -LiteralPath $snapshot.Path)) {
+                        Move-Item -LiteralPath $snapshot.BackupPath -Destination $snapshot.Path
+                    }
+                    else {
+                        Remove-Item -LiteralPath $snapshot.BackupPath -Force
+                    }
+                }
+                elseif (-not (Test-Path -LiteralPath $snapshot.Path)) {
+                    Write-FileBytesAtomically -Destination $snapshot.Path -Bytes $snapshot.Bytes
+                }
+            }
+            catch {
+                Write-Warning "Could not restore exact legacy file '$($snapshot.Path)': $($_.Exception.Message)"
+            }
+        }
+        throw $cleanupError
+    }
+
+    foreach ($directory in @(
+        $LegacyBinDir,
+        $LegacyPaperFlowHome,
+        $LegacyConfigDir
+    )) {
+        Remove-EmptyNormalDirectory -Path $directory
+    }
+}
+
 function Assert-InstallDestinationPreflight {
     Assert-RegularFileOrMissing -Path $ConfigPath -Name 'PaperFlow config'
     Assert-RegularFileOrMissing -Path $WrapperPath -Name 'PaperFlow wrapper'
+    if ($DataRootSupplied) {
+        foreach ($directory in @(
+            @{ Path = $BinDir; Name = 'PaperFlow bin directory' },
+            @{ Path = $ConfigDir; Name = 'PaperFlow config directory' },
+            @{ Path = $CacheDir; Name = 'PaperFlow cache directory' },
+            @{ Path = $TempDir; Name = 'PaperFlow temp directory' }
+        )) {
+            Assert-NormalDirectoryOrMissing -Path $directory.Path -Name $directory.Name
+        }
+    }
 }
 
 function Install-PaperFlowSkill {
@@ -316,6 +522,9 @@ function Install-PaperFlowSkill {
 
 $state = Get-InstallationState
 Write-Host 'PaperFlow installation preview'
+if ($DataRootSupplied) {
+    Write-Host "DataRoot: $ResolvedDataRoot"
+}
 Show-InstallationState -State $state
 
 if ($CheckOnly) {
@@ -360,6 +569,12 @@ if ($missingRequired.Count -gt 0) {
     throw "Missing required prerequisites: $($missingRequired -join ', '). Re-run with -InstallMissing or install them manually."
 }
 
+if ($DataRootSupplied -and $PSCmdlet.ShouldProcess($ResolvedDataRoot, 'Create PaperFlow data directories')) {
+    foreach ($directory in @($ResolvedDataRoot, $BinDir, $ConfigDir, $CacheDir, $TempDir)) {
+        [System.IO.Directory]::CreateDirectory($directory) | Out-Null
+    }
+}
+
 if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
     if ($PSCmdlet.ShouldProcess($VenvDir, 'Create PaperFlow virtual environment')) {
         Invoke-SelectedPython -Arguments @('-m', 'venv', $VenvDir)
@@ -367,13 +582,31 @@ if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
 }
 
 if ((Test-Path -LiteralPath $VenvPython -PathType Leaf) -and $PSCmdlet.ShouldProcess($ProjectRoot, 'Install PaperFlow into the virtual environment')) {
-    & $VenvPython -m pip install --requirement $RequirementsLock
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Locked runtime dependency installation failed.'
+    $tempWasPresent = Test-Path Env:TEMP
+    $tmpWasPresent = Test-Path Env:TMP
+    $pipNoCacheWasPresent = Test-Path Env:PIP_NO_CACHE_DIR
+    $originalTemp = $env:TEMP
+    $originalTmp = $env:TMP
+    $originalPipNoCache = $env:PIP_NO_CACHE_DIR
+    try {
+        if ($DataRootSupplied) {
+            $env:TEMP = $TempDir
+            $env:TMP = $TempDir
+            $env:PIP_NO_CACHE_DIR = '1'
+        }
+        & $VenvPython -m pip install --requirement $RequirementsLock
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Locked runtime dependency installation failed.'
+        }
+        & $VenvPython -m pip install --no-deps --no-build-isolation $ProjectRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw 'PaperFlow package installation failed.'
+        }
     }
-    & $VenvPython -m pip install --no-deps --no-build-isolation $ProjectRoot
-    if ($LASTEXITCODE -ne 0) {
-        throw 'PaperFlow package installation failed.'
+    finally {
+        if ($tempWasPresent) { $env:TEMP = $originalTemp } else { [Environment]::SetEnvironmentVariable('TEMP', $null, 'Process') }
+        if ($tmpWasPresent) { $env:TMP = $originalTmp } else { [Environment]::SetEnvironmentVariable('TMP', $null, 'Process') }
+        if ($pipNoCacheWasPresent) { $env:PIP_NO_CACHE_DIR = $originalPipNoCache } else { [Environment]::SetEnvironmentVariable('PIP_NO_CACHE_DIR', $null, 'Process') }
     }
 }
 
@@ -388,11 +621,17 @@ if ($PSCmdlet.ShouldProcess($SkillTarget, 'Copy PaperFlow Skill for the current 
     Install-PaperFlowSkill
 }
 
-if ($VaultPath) {
-    if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
-        Write-Host "Local config preserved: $ConfigPath"
+if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
+    Write-Host "Local config preserved: $ConfigPath"
+}
+elseif ($DataRootSupplied -and (Test-RegularNonReparseFile -Path $LegacyConfigPath)) {
+    if ($PSCmdlet.ShouldProcess($ConfigPath, "Migrate exact legacy PaperFlow config from $LegacyConfigPath")) {
+        [System.IO.Directory]::CreateDirectory($ConfigDir) | Out-Null
+        Copy-FileBytesAtomically -Source $LegacyConfigPath -Destination $ConfigPath
+        Write-Host "Legacy config migrated byte-for-byte: $ConfigPath"
     }
-    else {
+}
+elseif ($VaultPath) {
         $resolvedVault = (Resolve-Path -LiteralPath $VaultPath).Path
         $escapedVault = ConvertTo-TomlBasicString -Value $resolvedVault
         $config = @"
@@ -419,7 +658,6 @@ robotics = 5
                 }
             }
         }
-    }
 }
 else {
     Write-Warning 'No VaultPath was provided; local config.toml was not written.'
@@ -427,7 +665,20 @@ else {
 
 if ($PSCmdlet.ShouldProcess($WrapperPath, 'Create or update PaperFlow command wrapper')) {
     [System.IO.Directory]::CreateDirectory($BinDir) | Out-Null
-    $wrapper = "@echo off`r`n`"$VenvPaperFlow`" %*`r`n"
+    if ($DataRootSupplied) {
+        $wrapper = @"
+@echo off
+set "PAPERFLOW_HOME=$ResolvedDataRoot"
+set "PAPERFLOW_CACHE_DIR=$CacheDir"
+set "TMP=$TempDir"
+set "TEMP=$TempDir"
+"$VenvPaperFlow" %*
+"@
+        $wrapper = ($wrapper -replace "`r?`n", "`r`n") + "`r`n"
+    }
+    else {
+        $wrapper = "@echo off`r`n`"$VenvPaperFlow`" %*`r`n"
+    }
     $wrapperTempPath = Join-Path $BinDir ('.paperflow-wrapper-' + [guid]::NewGuid().ToString('N') + '.tmp')
     try {
         [System.IO.File]::WriteAllText($wrapperTempPath, $wrapper, (New-Object System.Text.UTF8Encoding($false)))
@@ -440,32 +691,90 @@ if ($PSCmdlet.ShouldProcess($WrapperPath, 'Create or update PaperFlow command wr
     }
 }
 
-$userPath = Get-PaperFlowUserPath
-$pathUpdate = Add-PaperFlowPathEntry -CurrentPath ([string]$userPath) -BinDir $BinDir
-if ($pathUpdate.Changed) {
-    $answer = Read-Host "Add '$BinDir' to your user PATH? [y/N]"
-    if ($answer -match '^(?i:y|yes)$') {
-        if ($PSCmdlet.ShouldProcess('User PATH', "Add $BinDir")) {
-            Set-PaperFlowUserPath -Value $pathUpdate.Value
-            Write-Host 'User PATH updated. Open a new terminal before running paperflow.'
-        }
-    }
-    else {
-        Write-Host "PATH unchanged. Run '$WrapperPath' directly or add the bin directory later."
-    }
-}
-else {
-    Write-Host 'PaperFlow bin directory is already present in the user PATH.'
-}
-
 if (-not $WhatIfPreference -and
     (Test-Path -LiteralPath $WrapperPath -PathType Leaf) -and
     (Test-Path -LiteralPath $VenvPaperFlowDoctor -PathType Leaf)) {
-    & $VenvPaperFlowDoctor --json doctor
-    $doctorExitCode = $LASTEXITCODE
-    if ($doctorExitCode -ne 0) {
-        Write-Warning "PaperFlow doctor exited with code $doctorExitCode. Review the doctor JSON output and resolve any required checks; optional Zotero, Obsidian, or missing Vault checks do not roll back the completed installation."
+    $doctorHomeWasPresent = Test-Path Env:PAPERFLOW_HOME
+    $doctorCacheWasPresent = Test-Path Env:PAPERFLOW_CACHE_DIR
+    $doctorTempWasPresent = Test-Path Env:TEMP
+    $doctorTmpWasPresent = Test-Path Env:TMP
+    $originalDoctorHome = $env:PAPERFLOW_HOME
+    $originalDoctorCache = $env:PAPERFLOW_CACHE_DIR
+    $originalDoctorTemp = $env:TEMP
+    $originalDoctorTmp = $env:TMP
+    try {
+        if ($DataRootSupplied) {
+            $env:PAPERFLOW_HOME = $ResolvedDataRoot
+            $env:PAPERFLOW_CACHE_DIR = $CacheDir
+            $env:TEMP = $TempDir
+            $env:TMP = $TempDir
+        }
+        & $VenvPaperFlowDoctor --json doctor
+        $doctorExitCode = $LASTEXITCODE
     }
+    finally {
+        if ($doctorHomeWasPresent) { $env:PAPERFLOW_HOME = $originalDoctorHome } else { [Environment]::SetEnvironmentVariable('PAPERFLOW_HOME', $null, 'Process') }
+        if ($doctorCacheWasPresent) { $env:PAPERFLOW_CACHE_DIR = $originalDoctorCache } else { [Environment]::SetEnvironmentVariable('PAPERFLOW_CACHE_DIR', $null, 'Process') }
+        if ($doctorTempWasPresent) { $env:TEMP = $originalDoctorTemp } else { [Environment]::SetEnvironmentVariable('TEMP', $null, 'Process') }
+        if ($doctorTmpWasPresent) { $env:TMP = $originalDoctorTmp } else { [Environment]::SetEnvironmentVariable('TMP', $null, 'Process') }
+    }
+    if ($doctorExitCode -ne 0) {
+        if ($DataRootSupplied) {
+            throw "PaperFlow doctor exited with code $doctorExitCode. Exact legacy wrapper and config were preserved."
+        }
+        else {
+            Write-Warning "PaperFlow doctor exited with code $doctorExitCode. Review the doctor JSON output and resolve any required checks; optional Zotero, Obsidian, or missing Vault checks do not roll back the completed installation."
+        }
+    }
+}
+elseif ($DataRootSupplied -and -not $WhatIfPreference) {
+    throw 'PaperFlow doctor could not run because the new wrapper or virtual-environment command is missing. Exact legacy files were preserved.'
+}
+
+$userPath = Get-PaperFlowUserPath
+$pathMigrationCommitted = $false
+if ($DataRootSupplied) {
+    $pathUpdate = Set-PaperFlowPathEntry -CurrentPath ([string]$userPath) -BinDir $BinDir -LegacyBinDir $LegacyBinDir
+    if ($pathUpdate.Changed) {
+        $answer = Read-Host "Replace the exact legacy PaperFlow bin with '$BinDir' in your user PATH? [y/N]"
+        if ($answer -match '^(?i:y|yes)$') {
+            if ($PSCmdlet.ShouldProcess('User PATH', "Migrate PaperFlow bin to $BinDir")) {
+                Set-PaperFlowUserPath -Value $pathUpdate.Value
+                $pathMigrationCommitted = $true
+                Write-Host 'User PATH migrated. Open a new terminal before running paperflow.'
+            }
+        }
+        else {
+            Write-Host "PATH unchanged. Exact legacy wrapper and config were preserved; run '$WrapperPath' directly or migrate PATH later."
+        }
+    }
+    else {
+        $pathMigrationCommitted = $true
+        Write-Host 'PaperFlow bin directory is already correctly present in the user PATH.'
+    }
+}
+else {
+    $pathUpdate = Add-PaperFlowPathEntry -CurrentPath ([string]$userPath) -BinDir $BinDir
+    if ($pathUpdate.Changed) {
+        $answer = Read-Host "Add '$BinDir' to your user PATH? [y/N]"
+        if ($answer -match '^(?i:y|yes)$') {
+            if ($PSCmdlet.ShouldProcess('User PATH', "Add $BinDir")) {
+                Set-PaperFlowUserPath -Value $pathUpdate.Value
+                Write-Host 'User PATH updated. Open a new terminal before running paperflow.'
+            }
+        }
+        else {
+            Write-Host "PATH unchanged. Run '$WrapperPath' directly or add the bin directory later."
+        }
+    }
+    else {
+        Write-Host 'PaperFlow bin directory is already present in the user PATH.'
+    }
+}
+
+if ($DataRootSupplied -and $pathMigrationCommitted -and
+    $PSCmdlet.ShouldProcess('Exact legacy PaperFlow wrapper and config files', 'Remove after doctor and PATH migration succeeded')) {
+    Remove-LegacyPaperFlowFiles
 }
 
 Write-Host 'PaperFlow installation steps completed.'

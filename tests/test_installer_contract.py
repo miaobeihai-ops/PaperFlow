@@ -78,6 +78,10 @@ def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, 
         "if os.environ.get('PAPERFLOW_PIP_LOG'):\n"
         "    with Path(os.environ['PAPERFLOW_PIP_LOG']).open('a', encoding='utf-8') as stream:\n"
         "        stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if os.environ.get('PAPERFLOW_PIP_ENV_LOG'):\n"
+        "    with Path(os.environ['PAPERFLOW_PIP_ENV_LOG']).open('a', encoding='utf-8') as stream:\n"
+        "        stream.write(json.dumps({name: os.environ.get(name) for name in "
+        "['TEMP', 'TMP', 'PIP_NO_CACHE_DIR']}) + '\\n')\n"
         "if os.environ.get('PAPERFLOW_PIP_FAIL_LOCK') and '--requirement' in sys.argv:\n"
         "    raise SystemExit(8)\n"
         "if os.environ.get('PAPERFLOW_PIP_FAIL_PROJECT') and '--no-deps' in sys.argv:\n"
@@ -86,6 +90,12 @@ def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, 
         "command = Path(sys.executable).with_name('paperflow.cmd')\n"
         "command.write_text('@echo off\\r\\n"
         "if defined PAPERFLOW_DOCTOR_LOG echo %*>>\"%PAPERFLOW_DOCTOR_LOG%\"\\r\\n"
+        "if defined PAPERFLOW_DOCTOR_ENV_LOG (\\r\\n"
+        "echo PAPERFLOW_HOME=%PAPERFLOW_HOME%>>\"%PAPERFLOW_DOCTOR_ENV_LOG%\"\\r\\n"
+        "echo PAPERFLOW_CACHE_DIR=%PAPERFLOW_CACHE_DIR%>>\"%PAPERFLOW_DOCTOR_ENV_LOG%\"\\r\\n"
+        "echo TMP=%TMP%>>\"%PAPERFLOW_DOCTOR_ENV_LOG%\"\\r\\n"
+        "echo TEMP=%TEMP%>>\"%PAPERFLOW_DOCTOR_ENV_LOG%\"\\r\\n"
+        ")\\r\\n"
         "echo {\"ok\":true}\\r\\n"
         "if defined PAPERFLOW_DOCTOR_EXIT exit /b %PAPERFLOW_DOCTOR_EXIT%\\r\\n"
         "exit /b 0\\r\\n', encoding='utf-8')\n",
@@ -203,6 +213,7 @@ def _run_dot_sourced_installer(
     setup: dict[str, object],
     *arguments: str,
     prologue: str = "",
+    epilogue: str = "",
     input_text: str = "n\n",
 ) -> subprocess.CompletedProcess[str]:
     command_arguments = " ".join(
@@ -212,7 +223,7 @@ def _run_dot_sourced_installer(
     invocation = ". {0} {1}".format(
         _powershell_literal(str(setup["installer"])), command_arguments
     ).rstrip()
-    command = "$ErrorActionPreference = 'Stop'; " + prologue + invocation
+    command = "$ErrorActionPreference = 'Stop'; " + prologue + invocation + epilogue
     return subprocess.run(
         [
             str(setup["powershell"]),
@@ -299,10 +310,93 @@ def test_installer_declares_safe_preview_first_interface():
     assert "[switch]$CheckOnly" in text
     assert "[switch]$InstallMissing" in text
     assert "[string]$VaultPath" in text
+    assert "[string]$DataRoot" in text
     assert "Invoke-Expression" not in text
     assert "zotero.sqlite" not in text.casefold()
     assert "PAPERFLOW_GMAIL_APP_PASSWORD" not in text
     assert "PAPERFLOW_PRIVATE_CONFIG_JSON" not in text
+
+
+def test_installer_declares_data_root_runtime_and_no_cache_contract():
+    text = INSTALLER.read_text(encoding="utf-8")
+
+    for assignment in (
+        'set "PAPERFLOW_HOME=$ResolvedDataRoot"',
+        'set "PAPERFLOW_CACHE_DIR=$CacheDir"',
+        'set "TMP=$TempDir"',
+        'set "TEMP=$TempDir"',
+    ):
+        assert assignment in text
+    assert "$env:PIP_NO_CACHE_DIR = '1'" in text
+    assert "Set-PaperFlowPathEntry" in text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_check_only_resolves_data_root_without_mutation(tmp_path):
+    setup = _isolated_installer(tmp_path, ("git", "codex"))
+    data_root = tmp_path / "data" / ".." / "PaperFlow Data"
+    resolved = (tmp_path / "PaperFlow Data").resolve()
+    before = _snapshot(tmp_path)
+
+    result = _run_isolated(setup, "-CheckOnly", "-DataRoot", str(data_root))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"DataRoot: {resolved}" in result.stdout
+    assert _snapshot(tmp_path) == before
+    assert not resolved.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize(
+    ("kind", "expected_message"),
+    [
+        ("relative", "DataRoot must be an absolute path"),
+        ("file", "DataRoot must be a normal directory"),
+        ("reparse", "DataRoot must not be a reparse point"),
+    ],
+)
+def test_invalid_data_root_is_rejected_before_mutation(
+    tmp_path, kind, expected_message
+):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    if kind == "relative":
+        data_root = "relative-data-root"
+    elif kind == "file":
+        path = tmp_path / "data-root-file"
+        path.write_text("not a directory", encoding="utf-8")
+        data_root = str(path)
+    else:
+        target = tmp_path / "reparse-target"
+        target.mkdir()
+        path = tmp_path / "reparse-root"
+        result = subprocess.run(
+            [
+                str(setup["powershell"]),
+                "-NoProfile",
+                "-Command",
+                f"New-Item -ItemType Junction -Path {_powershell_literal(str(path))} "
+                f"-Target {_powershell_literal(str(target))} | Out-Null",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            pytest.skip("Could not create a junction for the reparse-point test")
+        data_root = str(path)
+    before = _snapshot(tmp_path)
+
+    result = _run_isolated(setup, "-DataRoot", data_root)
+
+    assert result.returncode != 0
+    assert expected_message in result.stderr
+    assert _snapshot(tmp_path) == before
+    assert not (Path(setup["project"]) / ".venv").exists()
 
 
 def test_installer_uses_only_allowlisted_exact_winget_packages():
@@ -841,6 +935,109 @@ def test_formal_install_writes_expected_files_cleans_skill_and_is_idempotent(tmp
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_data_root_install_creates_layout_and_exact_wrapper_environment(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    data_root = tmp_path / "PaperFlow Data"
+
+    result = _run_isolated(
+        setup, "-DataRoot", str(data_root), "-VaultPath", str(setup["vault"])
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    wrapper = data_root / "bin" / "paperflow.cmd"
+    config = data_root / "config" / "config.toml"
+    assert wrapper.is_file()
+    assert config.is_file()
+    assert (data_root / "cache").is_dir()
+    assert (data_root / "tmp").is_dir()
+    wrapper_lines = wrapper.read_text(encoding="utf-8").splitlines()
+    assert wrapper_lines[:5] == [
+        "@echo off",
+        f'set "PAPERFLOW_HOME={data_root.resolve()}"',
+        f'set "PAPERFLOW_CACHE_DIR={data_root.resolve() / "cache"}"',
+        f'set "TMP={data_root.resolve() / "tmp"}"',
+        f'set "TEMP={data_root.resolve() / "tmp"}"',
+    ]
+    assert wrapper_lines[-1].endswith('paperflow.exe" %*')
+    assert not (Path(setup["local_appdata"]) / "PaperFlow" / "bin" / "paperflow.cmd").exists()
+    assert not (Path(setup["appdata"]) / "PaperFlow" / "config.toml").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_data_root_copies_legacy_config_bytes_atomically_without_overwriting(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    data_root = tmp_path / "PaperFlow Data"
+    legacy_config = Path(setup["appdata"]) / "PaperFlow" / "config.toml"
+    legacy_config.parent.mkdir(parents=True)
+    legacy_bytes = b'vault_path = "D:\\\\Legacy"\r\n# preserve bytes: \xff\x00\r\n'
+    legacy_config.write_bytes(legacy_bytes)
+
+    first = _run_isolated(setup, "-DataRoot", str(data_root))
+    assert first.returncode == 0, first.stdout + first.stderr
+    new_config = data_root / "config" / "config.toml"
+    assert new_config.read_bytes() == legacy_bytes
+    assert legacy_config.read_bytes() == legacy_bytes
+    assert not list(new_config.parent.glob(".paperflow-config-*"))
+
+    replacement = b'vault_path = "D:\\\\KeepNew"\ncustom = true\n'
+    new_config.write_bytes(replacement)
+    legacy_config.write_bytes(b"changed legacy")
+    second = _run_isolated(setup, "-DataRoot", str(data_root))
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert new_config.read_bytes() == replacement
+    assert legacy_config.read_bytes() == b"changed legacy"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize("original_no_cache", [None, "keep-original"])
+def test_data_root_pip_environment_is_scoped_and_restored(tmp_path, original_no_cache):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    data_root = tmp_path / "PaperFlow Data"
+    pip_env_log = tmp_path / "pip-env.log"
+    restored_log = tmp_path / "restored-env.json"
+    setup["env"] = {
+        **dict(setup["env"]),
+        "PAPERFLOW_PIP_ENV_LOG": str(pip_env_log),
+    }
+    if original_no_cache is None:
+        setup["env"].pop("PIP_NO_CACHE_DIR", None)
+    else:
+        setup["env"]["PIP_NO_CACHE_DIR"] = original_no_cache
+    epilogue = (
+        "; @{ TEMP = $env:TEMP; TMP = $env:TMP; "
+        "PIP_NO_CACHE_DIR = $env:PIP_NO_CACHE_DIR; "
+        "PipNoCachePresent = Test-Path Env:PIP_NO_CACHE_DIR } | ConvertTo-Json -Compress | "
+        f"Set-Content -LiteralPath {_powershell_literal(str(restored_log))} -Encoding UTF8"
+    )
+
+    result = _run_dot_sourced_installer(
+        setup, "-DataRoot", str(data_root), epilogue=epilogue
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    expected_tmp = str((data_root / "tmp").resolve())
+    pip_environments = [
+        json.loads(line) for line in pip_env_log.read_text(encoding="utf-8").splitlines()
+    ]
+    assert pip_environments == [
+        {"TEMP": expected_tmp, "TMP": expected_tmp, "PIP_NO_CACHE_DIR": "1"},
+        {"TEMP": expected_tmp, "TMP": expected_tmp, "PIP_NO_CACHE_DIR": "1"},
+    ]
+    restored = json.loads(restored_log.read_text(encoding="utf-8-sig"))
+    assert restored["TEMP"] == str(Path(setup["env"]["TEMP"]))
+    assert restored["TMP"] == str(Path(setup["env"]["TMP"]))
+    assert restored["PipNoCachePresent"] is (original_no_cache is not None)
+    if original_no_cache is not None:
+        assert restored["PIP_NO_CACHE_DIR"] == original_no_cache
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
 def test_formal_install_consumes_runtime_lock_then_installs_project_without_deps(
     tmp_path,
 ):
@@ -907,6 +1104,71 @@ def _enable_fake_doctor(
     }
 
 
+def _write_legacy_install(
+    setup: dict[str, object], *, keep_neighbor: bool = False
+) -> tuple[Path, Path, bytes, bytes]:
+    legacy_wrapper = (
+        Path(setup["local_appdata"]) / "PaperFlow" / "bin" / "paperflow.cmd"
+    )
+    legacy_config = Path(setup["appdata"]) / "PaperFlow" / "config.toml"
+    legacy_wrapper.parent.mkdir(parents=True)
+    legacy_config.parent.mkdir(parents=True)
+    wrapper_bytes = b"@echo off\r\necho exact legacy wrapper\r\n"
+    config_bytes = b'vault_path = "D:\\\\ExactLegacy"\r\ncustom = 7\r\n'
+    legacy_wrapper.write_bytes(wrapper_bytes)
+    legacy_config.write_bytes(config_bytes)
+    if keep_neighbor:
+        (legacy_wrapper.parent.parent / "keep.txt").write_text(
+            "preserve me", encoding="utf-8"
+        )
+    return legacy_wrapper, legacy_config, wrapper_bytes, config_bytes
+
+
+def _preprovision_fake_venv(setup: dict[str, object]) -> None:
+    venv = Path(setup["project"]) / ".venv"
+    scripts = venv / "Scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(sys.executable, scripts / "python.exe")
+    shutil.copy2(Path(sys.executable).parents[1] / "pyvenv.cfg", venv / "pyvenv.cfg")
+
+
+def _use_file_backed_user_path(setup: dict[str, object], value: str) -> Path:
+    path_file = Path(setup["project"]) / "isolated-user-path.txt"
+    path_file.write_text(value, encoding="utf-8")
+    installer = Path(setup["installer"])
+    text = installer.read_text(encoding="utf-8")
+    original = """function Get-PaperFlowUserPath {
+    return [Environment]::GetEnvironmentVariable('Path', 'User')
+}
+
+function Set-PaperFlowUserPath {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
+}"""
+    replacement = f"""function Get-PaperFlowUserPath {{
+    return [System.IO.File]::ReadAllText({_powershell_literal(str(path_file))})
+}}
+
+function Set-PaperFlowUserPath {{
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    [System.IO.File]::WriteAllText({_powershell_literal(str(path_file))}, $Value)
+}}"""
+    assert original in text
+    installer.write_text(text.replace(original, replacement), encoding="utf-8")
+    return path_file
+
+
+def test_data_root_doctor_precedes_path_commit_and_legacy_cleanup():
+    text = INSTALLER.read_text(encoding="utf-8")
+    doctor_position = text.index("& $VenvPaperFlowDoctor --json doctor")
+    path_position = text.index("$userPath = Get-PaperFlowUserPath")
+    cleanup_position = text.rindex("Remove-LegacyPaperFlowFiles")
+
+    assert doctor_position < path_position < cleanup_position
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
 def test_formal_install_runs_read_only_doctor_after_wrapper_creation(tmp_path):
     setup = _isolated_installer(
@@ -920,6 +1182,97 @@ def test_formal_install_runs_read_only_doctor_after_wrapper_creation(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert doctor_log.read_text(encoding="utf-8").splitlines() == ["--json doctor"]
     assert (Path(setup["local_appdata"]) / "PaperFlow" / "bin" / "paperflow.cmd").is_file()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_successful_data_root_migrates_config_wrapper_path_and_preserves_neighbor(
+    tmp_path,
+):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    doctor_env_log = tmp_path / "doctor-env.log"
+    setup["env"] = {
+        **dict(setup["env"]),
+        "PAPERFLOW_DOCTOR_ENV_LOG": str(doctor_env_log),
+    }
+    legacy_wrapper, legacy_config, _, config_bytes = _write_legacy_install(
+        setup, keep_neighbor=True
+    )
+    legacy_bin = str(legacy_wrapper.parent)
+    initial_path = rf"C:\Other;{legacy_bin}"
+
+    path_file = _use_file_backed_user_path(setup, initial_path)
+    result = _run_isolated(
+        setup, "-DataRoot", str(data_root), input_text="y\n"
+    )
+    migrated_path = path_file.read_text(encoding="utf-8")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert migrated_path == rf"C:\Other;{data_root.resolve()}\bin"
+    assert (data_root / "config" / "config.toml").read_bytes() == config_bytes
+    assert (data_root / "bin" / "paperflow.cmd").is_file()
+    assert not legacy_wrapper.exists()
+    assert not legacy_config.exists()
+    assert (legacy_wrapper.parent.parent / "keep.txt").read_text(encoding="utf-8") == "preserve me"
+    assert doctor_env_log.read_text(encoding="utf-8").splitlines() == [
+        f"PAPERFLOW_HOME={data_root.resolve()}",
+        f"PAPERFLOW_CACHE_DIR={data_root.resolve() / 'cache'}",
+        f"TMP={data_root.resolve() / 'tmp'}",
+        f"TEMP={data_root.resolve() / 'tmp'}",
+    ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_data_root_doctor_failure_preserves_exact_legacy_files_and_path(tmp_path):
+    setup = _isolated_installer(tmp_path, ("git", "codex"))
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    doctor_log = tmp_path / "doctor.log"
+    _enable_fake_doctor(setup, doctor_log, exit_code=23)
+    legacy_wrapper, legacy_config, wrapper_bytes, config_bytes = _write_legacy_install(
+        setup
+    )
+    initial_path = rf"C:\Other;{legacy_wrapper.parent}"
+
+    path_file = _use_file_backed_user_path(setup, initial_path)
+    result = _run_isolated(
+        setup, "-DataRoot", str(data_root), input_text="y\n"
+    )
+    current_path = path_file.read_text(encoding="utf-8")
+
+    assert result.returncode != 0
+    assert "PaperFlow doctor exited with code 23" in result.stderr
+    assert doctor_log.read_text(encoding="utf-8").splitlines() == ["--json doctor"]
+    assert legacy_wrapper.read_bytes() == wrapper_bytes
+    assert legacy_config.read_bytes() == config_bytes
+    assert current_path == initial_path
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_data_root_path_decline_preserves_exact_legacy_files_and_path(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    legacy_wrapper, legacy_config, wrapper_bytes, config_bytes = _write_legacy_install(
+        setup
+    )
+    initial_path = rf"C:\Other;{legacy_wrapper.parent}"
+
+    path_file = _use_file_backed_user_path(setup, initial_path)
+    result = _run_isolated(
+        setup, "-DataRoot", str(data_root), input_text="n\n"
+    )
+    current_path = path_file.read_text(encoding="utf-8")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert current_path == initial_path
+    assert legacy_wrapper.read_bytes() == wrapper_bytes
+    assert legacy_config.read_bytes() == config_bytes
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
