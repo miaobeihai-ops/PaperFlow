@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
+import tomllib
 from datetime import date
 from pathlib import Path
 
@@ -13,10 +16,157 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-windows.ps1"
+UPSTREAM_LICENSE = Path(
+    r"C:\Users\admin\Documents\Codex\2026-08-12\huangkiki-dailypaper-skills-https-github-com\work\dailypaper-skills\LICENSE"
+)
 
 
 def _read(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def _snapshot(root: Path) -> dict[str, bytes | None]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes() if path.is_file() else None
+        for path in root.rglob("*")
+    }
+
+
+def _user_path_from_registry() -> str | None:
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            return winreg.QueryValueEx(key, "Path")[0]
+    except FileNotFoundError:
+        return None
+
+
+def _write_command(fake_bin: Path, name: str, body: str = "@exit /b 0\r\n") -> None:
+    (fake_bin / f"{name}.cmd").write_text(body, encoding="utf-8")
+
+
+def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, object]:
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+
+    project = tmp_path / "project"
+    scripts = project / "scripts"
+    skill_source = project / ".agents" / "skills" / "paperflow"
+    scripts.mkdir(parents=True)
+    skill_source.mkdir(parents=True)
+    shutil.copy2(INSTALLER, scripts / INSTALLER.name)
+    (project / "pyproject.toml").write_text(
+        "[project]\nname = \"paperflow\"\nversion = \"0.1.0\"\n",
+        encoding="utf-8",
+    )
+    (skill_source / "SKILL.md").write_text("current skill\n", encoding="utf-8")
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_modules = tmp_path / "fake-modules"
+    fake_bin.mkdir()
+    fake_modules.mkdir()
+    source_python = Path(sys.executable)
+    (fake_modules / "pip.py").write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "Path(sys.executable).with_name('paperflow.exe').write_text('fake paperflow', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    py_body = (
+        "@echo off\r\n"
+        'if "%~1"=="-c" (echo 3.12.7& exit /b 0)\r\n'
+        f'if "%~1"=="-m" if "%~2"=="venv" ("{source_python}" -m venv "%~3"& exit /b %ERRORLEVEL%)\r\n'
+        "exit /b 1\r\n"
+    )
+    _write_command(fake_bin, "py", py_body)
+    for command in commands:
+        _write_command(fake_bin, command)
+
+    user_profile = tmp_path / "profile"
+    appdata = tmp_path / "appdata"
+    local_appdata = tmp_path / "localappdata"
+    program_files = tmp_path / "program-files"
+    program_files_x86 = tmp_path / "program-files-x86"
+    runtime_temp = tmp_path / "runtime-temp"
+    vault = tmp_path / "Vault"
+    for directory in (
+        user_profile,
+        appdata,
+        local_appdata,
+        program_files,
+        program_files_x86,
+        runtime_temp,
+        vault,
+    ):
+        directory.mkdir()
+
+    skill_target = user_profile / ".agents" / "skills" / "paperflow"
+    skill_target.mkdir(parents=True)
+    (skill_target / "SKILL.md").write_text("old skill\n", encoding="utf-8")
+    (skill_target / "stale.txt").write_text("remove me\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(user_profile),
+            "USERPROFILE": str(user_profile),
+            "APPDATA": str(appdata),
+            "LOCALAPPDATA": str(local_appdata),
+            "ProgramFiles": str(program_files),
+            "ProgramFiles(x86)": str(program_files_x86),
+            "ProgramW6432": str(program_files),
+            "TEMP": str(runtime_temp),
+            "TMP": str(runtime_temp),
+            "PATH": str(fake_bin),
+            "PYTHONPATH": str(fake_modules),
+        }
+    )
+    subprocess.run(
+        [powershell, "-NoProfile", "-Command", "exit 0"],
+        env=env,
+        capture_output=True,
+        timeout=30,
+        check=True,
+    )
+    return {
+        "powershell": powershell,
+        "project": project,
+        "installer": scripts / INSTALLER.name,
+        "env": env,
+        "vault": vault,
+        "user_profile": user_profile,
+        "appdata": appdata,
+        "local_appdata": local_appdata,
+        "skill_target": skill_target,
+        "fake_bin": fake_bin,
+    }
+
+
+def _run_isolated(
+    setup: dict[str, object], *arguments: str, input_text: str = "n\n"
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(setup["powershell"]),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(setup["installer"]),
+            *arguments,
+        ],
+        cwd=Path(setup["project"]),
+        env=dict(setup["env"]),
+        input=input_text,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
 
 
 def test_installer_declares_safe_preview_first_interface():
@@ -64,6 +214,19 @@ def test_installer_uses_current_agents_skill_paths_only():
     assert ".agents\\skills\\paperflow" in text
     assert ".codex\\skills" not in text.casefold()
     assert "CODEX_HOME" not in text
+    assert "Join-Path $env:USERPROFILE '.agents\\skills\\paperflow'" in text
+
+
+def test_skill_cleanup_validates_exact_target_before_recursive_delete():
+    text = INSTALLER.read_text(encoding="utf-8")
+    cleanup = text[text.index("if ($PSCmdlet.ShouldProcess($SkillTarget") :]
+
+    validation_position = cleanup.index("Assert-SafeSkillTarget")
+    delete_position = cleanup.index(
+        "Remove-Item -LiteralPath $SkillTarget -Recurse -Force"
+    )
+    assert validation_position < delete_position
+    assert "[System.IO.Path]::GetFullPath" in text
     assert "Join-Path $env:USERPROFILE '.agents\\skills\\paperflow'" in text
 
 
@@ -183,6 +346,103 @@ def test_check_only_runs_without_mutating_isolated_user_directories(tmp_path):
     assert env.get("PATH", "") == before_path
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_whatif_valid_install_is_fully_non_mutating(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    before = _snapshot(tmp_path)
+
+    result = _run_isolated(
+        setup,
+        "-WhatIf",
+        "-VaultPath",
+        str(setup["vault"]),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "What if:" in result.stdout
+    assert _snapshot(tmp_path) == before
+    assert not (Path(setup["project"]) / ".venv").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_formal_install_writes_expected_files_cleans_skill_and_is_idempotent(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    registry_path_before = _user_path_from_registry()
+
+    first = _run_isolated(setup, "-VaultPath", str(setup["vault"]))
+    assert first.returncode == 0, first.stdout + first.stderr
+    project = Path(setup["project"])
+    wrapper = Path(setup["local_appdata"]) / "PaperFlow" / "bin" / "paperflow.cmd"
+    config = Path(setup["appdata"]) / "PaperFlow" / "config.toml"
+    skill_target = Path(setup["skill_target"])
+    expected_files = (wrapper, config, skill_target / "SKILL.md")
+    first_contents = {path: path.read_bytes() for path in expected_files}
+
+    second = _run_isolated(setup, "-VaultPath", str(setup["vault"]))
+    assert second.returncode == 0, second.stdout + second.stderr
+
+    assert (project / ".venv" / "Scripts" / "python.exe").is_file()
+    assert (project / ".venv" / "Scripts" / "paperflow.exe").is_file()
+    assert wrapper.is_file()
+    assert "%*" in wrapper.read_text(encoding="utf-8")
+    assert str(project / ".venv" / "Scripts" / "paperflow.exe") in wrapper.read_text(
+        encoding="utf-8"
+    )
+    assert tomllib.loads(config.read_text(encoding="utf-8"))["vault_path"] == str(
+        Path(setup["vault"]).resolve()
+    )
+    assert (skill_target / "SKILL.md").read_text(encoding="utf-8") == "current skill\n"
+    assert not (skill_target / "stale.txt").exists()
+    assert {path: path.read_bytes() for path in expected_files} == first_contents
+    assert _user_path_from_registry() == registry_path_before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_invalid_vault_fails_before_any_persistent_install_write(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    before = _snapshot(tmp_path)
+    invalid_vault = tmp_path / "missing-vault"
+
+    result = _run_isolated(setup, "-VaultPath", str(invalid_vault))
+
+    assert result.returncode != 0
+    assert "VaultPath must be an existing directory" in result.stderr
+    assert _snapshot(tmp_path) == before
+    assert not (Path(setup["project"]) / ".venv").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_install_missing_executes_only_missing_allowlisted_exact_ids(tmp_path):
+    setup = _isolated_installer(tmp_path, ())
+    winget_log = tmp_path / "winget.log"
+    env = dict(setup["env"])
+    env["PAPERFLOW_WINGET_LOG"] = str(winget_log)
+    env["PAPERFLOW_FAKE_BIN"] = str(setup["fake_bin"])
+    setup["env"] = env
+    _write_command(
+        Path(setup["fake_bin"]),
+        "winget",
+        '@echo off\r\nif "%~3"=="Git.Git" echo @exit /b 0>"%PAPERFLOW_FAKE_BIN%\\git.cmd"\r\necho %*>>"%PAPERFLOW_WINGET_LOG%"\r\nexit /b 0\r\n',
+    )
+
+    result = _run_isolated(setup, "-InstallMissing")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = [line.strip() for line in winget_log.read_text(encoding="utf-8").splitlines()]
+    assert calls == [
+        "install --id Git.Git --exact",
+        "install --id DigitalScholar.Zotero --exact",
+        "install --id Obsidian.Obsidian --exact",
+    ]
+    assert all("Codex" not in call for call in calls)
+
+
 def test_ci_is_least_privilege_and_pinned_for_windows_and_linux():
     text = _read(".github/workflows/ci.yml")
 
@@ -267,11 +527,28 @@ def test_notice_and_license_have_required_release_attribution():
         "It is an optional, separately installed AGPL-3.0-or-later project.\n"
     )
 
-    license_text = _read("LICENSE")
+    license_text = _read("LICENSE").replace("\r\n", "\n").replace("\r", "\n")
     lines = license_text.splitlines()
     assert lines[0] == "Apache License"
     assert lines[1] == "Version 2.0, January 2004"
     assert "END OF TERMS AND CONDITIONS" in license_text
+    assert hashlib.sha256(license_text.encode()).hexdigest() == (
+        "498c6c5c534d36610b100637379845f67bd516b54b7d4aaf8a8dd6766aaef467"
+    )
+
+
+@pytest.mark.skipif(
+    not UPSTREAM_LICENSE.exists(), reason="reviewed upstream checkout is unavailable"
+)
+def test_license_matches_reviewed_upstream_full_text():
+    license_text = _read("LICENSE").replace("\r\n", "\n").replace("\r", "\n")
+    upstream_text = (
+        UPSTREAM_LICENSE.read_text(encoding="utf-8")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+
+    assert license_text == upstream_text
 
 
 def test_pilot_checklist_has_seven_consecutive_uncompleted_dates():

@@ -166,6 +166,19 @@ function ConvertTo-TomlBasicString {
     return $Value.Replace('\', '\\').Replace('"', '\"')
 }
 
+function Assert-SafeSkillTarget {
+    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        throw 'USERPROFILE is required to install the PaperFlow Skill.'
+    }
+    $expectedTarget = [System.IO.Path]::GetFullPath(
+        (Join-Path $env:USERPROFILE '.agents\skills\paperflow')
+    )
+    $actualTarget = [System.IO.Path]::GetFullPath($SkillTarget)
+    if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($actualTarget, $expectedTarget)) {
+        throw 'Refusing to replace an unexpected Skill target.'
+    }
+}
+
 $state = Get-InstallationState
 Write-Host 'PaperFlow installation preview'
 Show-InstallationState -State $state
@@ -231,6 +244,10 @@ if (-not (Test-Path -LiteralPath $SkillSource -PathType Container)) {
     throw "PaperFlow Skill source was not found: $SkillSource"
 }
 if ($PSCmdlet.ShouldProcess($SkillTarget, 'Copy PaperFlow Skill for the current user')) {
+    Assert-SafeSkillTarget
+    if (Test-Path -LiteralPath $SkillTarget) {
+        Remove-Item -LiteralPath $SkillTarget -Recurse -Force
+    }
     [System.IO.Directory]::CreateDirectory($SkillTarget) | Out-Null
     Copy-Item -Path (Join-Path $SkillSource '*') -Destination $SkillTarget -Recurse -Force
 }
