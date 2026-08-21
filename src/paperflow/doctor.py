@@ -24,6 +24,10 @@ def _first_existing(
     return any(path_exists(candidate) for candidate in candidates)
 
 
+def _unique_paths(candidates: Sequence[Path]) -> tuple[Path, ...]:
+    return tuple(dict.fromkeys(candidates))
+
+
 def run_checks(
     *,
     config_path: Path | None = None,
@@ -135,8 +139,16 @@ def run_checks(
         Path(root) / "Obsidian" / "Obsidian.exe" for root in program_files
     ]
     if local_app_data:
+        zotero_candidates.append(
+            Path(local_app_data) / "Programs" / "Zotero" / "zotero.exe"
+        )
+        obsidian_candidates.append(
+            Path(local_app_data) / "Programs" / "Obsidian" / "Obsidian.exe"
+        )
         zotero_candidates.append(Path(local_app_data) / "Zotero" / "zotero.exe")
         obsidian_candidates.append(Path(local_app_data) / "Obsidian" / "Obsidian.exe")
+    zotero_candidates = _unique_paths(zotero_candidates)
+    obsidian_candidates = _unique_paths(obsidian_candidates)
 
     zotero_ok = _first_existing(zotero_candidates, path_exists)
     checks.append(

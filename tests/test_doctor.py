@@ -42,6 +42,13 @@ def test_run_checks_core_injection_and_windows_app_candidates(tmp_path):
     vault_path = tmp_path / "missing-vault"
     skill_path = tmp_path / "missing-skill" / "SKILL.md"
     which_calls = []
+    observed_paths = []
+    obsidian_programs = Path(
+        "C:/Users/test/AppData/Local/Programs/Obsidian/Obsidian.exe"
+    )
+    zotero_programs = Path(
+        "C:/Users/test/AppData/Local/Programs/Zotero/zotero.exe"
+    )
 
     def which(command):
         which_calls.append(command)
@@ -52,10 +59,8 @@ def test_run_checks_core_injection_and_windows_app_candidates(tmp_path):
         return None
 
     def path_exists(path):
-        normalized = str(path).replace("\\", "/").casefold()
-        return normalized.endswith("/obsidian.exe") or normalized.endswith(
-            "/zotero.exe"
-        )
+        observed_paths.append(path)
+        return path in {obsidian_programs, zotero_programs}
 
     checks = _by_name(
         doctor.run_checks(
@@ -82,6 +87,80 @@ def test_run_checks_core_injection_and_windows_app_candidates(tmp_path):
     assert checks["AI Sidebar"].ok is False
     assert checks["AI Sidebar"].required is False
     assert which_calls == ["git", "codex.cmd"]
+    assert obsidian_programs in observed_paths
+    assert zotero_programs in observed_paths
+
+
+@pytest.mark.parametrize(
+    ("check_name", "other_name", "relative_path"),
+    [
+        ("Obsidian", "Zotero", "Programs/Obsidian/Obsidian.exe"),
+        ("Zotero", "Obsidian", "Programs/Zotero/zotero.exe"),
+    ],
+)
+def test_user_level_programs_app_candidate_is_detected(
+    check_name, other_name, relative_path
+):
+    doctor = _doctor()
+    local_app_data = Path("C:/Users/test/AppData/Local")
+    expected = local_app_data / relative_path
+    observed_paths = []
+
+    def path_exists(path):
+        observed_paths.append(path)
+        return path == expected
+
+    checks = _by_name(
+        doctor.run_checks(
+            config_path=Path("C:/missing.toml"),
+            vault_path=Path("C:/missing-vault"),
+            skill_path=Path("C:/missing-skill.md"),
+            which=lambda _command: None,
+            path_exists=path_exists,
+            environ={"LOCALAPPDATA": str(local_app_data)},
+            python_version=(3, 11, 0),
+        )
+    )
+
+    assert expected in observed_paths
+    assert checks[check_name].ok is True
+    assert checks[other_name].ok is False
+
+
+def test_windows_app_candidates_are_stably_ordered_and_deduplicated():
+    doctor = _doctor()
+    observed_paths = []
+
+    def path_exists(path):
+        observed_paths.append(path)
+        return False
+
+    doctor.run_checks(
+        config_path=Path("C:/missing.toml"),
+        vault_path=Path("C:/missing-vault"),
+        skill_path=Path("C:/missing-skill.md"),
+        which=lambda _command: None,
+        path_exists=path_exists,
+        environ={
+            "PROGRAMFILES": "C:/Program Files",
+            "PROGRAMFILES(X86)": "C:/Program Files",
+            "LOCALAPPDATA": "C:/Users/test/AppData/Local",
+        },
+        python_version=(3, 11, 0),
+    )
+
+    executable_candidates = [
+        path for path in observed_paths if path.suffix.casefold() == ".exe"
+    ]
+    assert executable_candidates == [
+        Path("C:/Program Files/Zotero/zotero.exe"),
+        Path("C:/Users/test/AppData/Local/Programs/Zotero/zotero.exe"),
+        Path("C:/Users/test/AppData/Local/Zotero/zotero.exe"),
+        Path("C:/Program Files/Obsidian/Obsidian.exe"),
+        Path("C:/Users/test/AppData/Local/Programs/Obsidian/Obsidian.exe"),
+        Path("C:/Users/test/AppData/Local/Obsidian/Obsidian.exe"),
+    ]
+    assert len(executable_candidates) == len(set(executable_candidates))
 
 
 def test_invalid_config_and_missing_vault_are_fixed_and_sanitized(tmp_path):
