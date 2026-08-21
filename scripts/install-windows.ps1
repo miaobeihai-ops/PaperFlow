@@ -20,6 +20,8 @@ $SkillTarget = Join-Path $env:USERPROFILE '.agents\skills\paperflow'
 $script:PythonCommand = $null
 $script:PythonPrefixArguments = @()
 
+. (Join-Path $PSScriptRoot 'install-windows-path.ps1')
+
 $AllowedWingetPackages = @{
     Git = 'Git.Git'
     Python = 'Python.Python.3.11'
@@ -150,26 +152,13 @@ function Refresh-ProcessPath {
     $env:Path = @($env:Path, $machinePath, $userPath) -join ';'
 }
 
-function Test-PaperFlowUserPathSeamEnabled {
-    $variableName = 'PAPERFLOW_INSTALLER_TEST_USER_PATH_VALUE'
-    $processEnvironment = [Environment]::GetEnvironmentVariables('Process')
-    return $processEnvironment.Contains($variableName)
-}
-
 function Get-PaperFlowUserPath {
-    if (Test-PaperFlowUserPathSeamEnabled) {
-        return [string]$env:PAPERFLOW_INSTALLER_TEST_USER_PATH_VALUE
-    }
     return [Environment]::GetEnvironmentVariable('Path', 'User')
 }
 
 function Set-PaperFlowUserPath {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
 
-    if (Test-PaperFlowUserPathSeamEnabled) {
-        $env:PAPERFLOW_INSTALLER_TEST_USER_PATH_VALUE = $Value
-        return
-    }
     [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
 }
 
@@ -202,6 +191,89 @@ function Assert-SafeSkillTarget {
     }
 }
 
+function Assert-ValidSkillDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $manifestPath = Join-Path $Path 'SKILL.md'
+    if (-not (Test-Path -LiteralPath $Path -PathType Container) -or
+        -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "PaperFlow Skill source must be a directory containing a valid non-empty SKILL.md: $Path"
+    }
+    $manifestContent = [System.IO.File]::ReadAllText($manifestPath)
+    if ([string]::IsNullOrWhiteSpace($manifestContent)) {
+        throw "PaperFlow Skill source must be a directory containing a valid non-empty SKILL.md: $Path"
+    }
+}
+
+function Assert-SafeSkillSiblingPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][ValidateSet('staging', 'backup')][string]$Kind
+    )
+
+    Assert-SafeSkillTarget
+    $expectedParent = [System.IO.Path]::GetFullPath((Split-Path -Parent $SkillTarget))
+    $actualPath = [System.IO.Path]::GetFullPath($Path)
+    $actualParent = [System.IO.Path]::GetFullPath((Split-Path -Parent $actualPath))
+    $expectedNamePattern = "^\.paperflow-$Kind-[0-9a-f]{32}$"
+    if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($actualParent, $expectedParent) -or
+        ([System.IO.Path]::GetFileName($actualPath) -notmatch $expectedNamePattern)) {
+        throw "Refusing to use an unexpected PaperFlow Skill $Kind path."
+    }
+}
+
+function Install-PaperFlowSkill {
+    Assert-SafeSkillTarget
+    Assert-ValidSkillDirectory -Path $SkillSource
+    $skillParent = Split-Path -Parent $SkillTarget
+    $stagingPath = Join-Path $skillParent ('.paperflow-staging-' + [guid]::NewGuid().ToString('N'))
+    $backupPath = Join-Path $skillParent ('.paperflow-backup-' + [guid]::NewGuid().ToString('N'))
+    Assert-SafeSkillSiblingPath -Path $stagingPath -Kind 'staging'
+    Assert-SafeSkillSiblingPath -Path $backupPath -Kind 'backup'
+    $backupCreated = $false
+    $replacementInstalled = $false
+
+    try {
+        [System.IO.Directory]::CreateDirectory($skillParent) | Out-Null
+        Copy-Item -LiteralPath $SkillSource -Destination $stagingPath -Recurse -Force
+        Assert-ValidSkillDirectory -Path $stagingPath
+        if (Test-Path -LiteralPath $SkillTarget) {
+            Move-Item -LiteralPath $SkillTarget -Destination $backupPath
+            $backupCreated = $true
+        }
+        Move-Item -LiteralPath $stagingPath -Destination $SkillTarget
+        $replacementInstalled = $true
+        if ($backupCreated) {
+            Assert-SafeSkillSiblingPath -Path $backupPath -Kind 'backup'
+            Remove-Item -LiteralPath $backupPath -Recurse -Force
+            $backupCreated = $false
+        }
+    }
+    catch {
+        $replacementError = $_
+        if ($backupCreated) {
+            try {
+                if ($replacementInstalled -and (Test-Path -LiteralPath $SkillTarget)) {
+                    Assert-SafeSkillTarget
+                    Remove-Item -LiteralPath $SkillTarget -Recurse -Force
+                }
+                if (-not (Test-Path -LiteralPath $SkillTarget)) {
+                    Move-Item -LiteralPath $backupPath -Destination $SkillTarget
+                    $backupCreated = $false
+                }
+            }
+            catch {
+                Write-Warning "Could not restore the previous PaperFlow Skill from its validated backup: $($_.Exception.Message)"
+            }
+        }
+        if (Test-Path -LiteralPath $stagingPath) {
+            Assert-SafeSkillSiblingPath -Path $stagingPath -Kind 'staging'
+            Remove-Item -LiteralPath $stagingPath -Recurse -Force
+        }
+        throw $replacementError
+    }
+}
+
 $state = Get-InstallationState
 Write-Host 'PaperFlow installation preview'
 Show-InstallationState -State $state
@@ -214,6 +286,9 @@ if ($CheckOnly) {
 if ($VaultPath -and -not $state.Vault) {
     throw 'VaultPath must be an existing directory.'
 }
+
+Assert-ValidSkillDirectory -Path $SkillSource
+Assert-SafeSkillTarget
 
 if ($InstallMissing) {
     if (-not (Test-CommandAvailable 'winget')) {
@@ -257,28 +332,18 @@ if ((Test-Path -LiteralPath $VenvPython -PathType Leaf) -and $PSCmdlet.ShouldPro
     }
 }
 
-if ($PSCmdlet.ShouldProcess($WrapperPath, 'Create or update PaperFlow command wrapper')) {
-    [System.IO.Directory]::CreateDirectory($BinDir) | Out-Null
-    $wrapper = "@echo off`r`n`"$VenvPaperFlow`" %*`r`n"
-    [System.IO.File]::WriteAllText($WrapperPath, $wrapper, (New-Object System.Text.UTF8Encoding($false)))
-}
-
-if (-not (Test-Path -LiteralPath $SkillSource -PathType Container)) {
-    throw "PaperFlow Skill source was not found: $SkillSource"
-}
 if ($PSCmdlet.ShouldProcess($SkillTarget, 'Copy PaperFlow Skill for the current user')) {
-    Assert-SafeSkillTarget
-    if (Test-Path -LiteralPath $SkillTarget) {
-        Remove-Item -LiteralPath $SkillTarget -Recurse -Force
-    }
-    [System.IO.Directory]::CreateDirectory($SkillTarget) | Out-Null
-    Copy-Item -Path (Join-Path $SkillSource '*') -Destination $SkillTarget -Recurse -Force
+    Install-PaperFlowSkill
 }
 
 if ($VaultPath) {
-    $resolvedVault = (Resolve-Path -LiteralPath $VaultPath).Path
-    $escapedVault = ConvertTo-TomlBasicString -Value $resolvedVault
-    $config = @"
+    if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
+        Write-Host "Local config preserved: $ConfigPath"
+    }
+    else {
+        $resolvedVault = (Resolve-Path -LiteralPath $VaultPath).Path
+        $escapedVault = ConvertTo-TomlBasicString -Value $resolvedVault
+        $config = @"
 vault_path = "$escapedVault"
 top_n = 10
 timezone = "Asia/Hong_Kong"
@@ -289,30 +354,47 @@ arxiv_categories = ["cs.RO", "cs.CV", "cs.AI", "cs.LG"]
 robotics = 5
 "3d reconstruction" = 8
 "@
-    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Create or update local PaperFlow configuration')) {
-        [System.IO.Directory]::CreateDirectory($ConfigDir) | Out-Null
-        [System.IO.File]::WriteAllText($ConfigPath, $config, (New-Object System.Text.UTF8Encoding($false)))
+        if ($PSCmdlet.ShouldProcess($ConfigPath, 'Create local PaperFlow configuration')) {
+            [System.IO.Directory]::CreateDirectory($ConfigDir) | Out-Null
+            $configTempPath = Join-Path $ConfigDir ('.paperflow-config-' + [guid]::NewGuid().ToString('N') + '.tmp')
+            try {
+                [System.IO.File]::WriteAllText($configTempPath, $config, (New-Object System.Text.UTF8Encoding($false)))
+                Move-Item -LiteralPath $configTempPath -Destination $ConfigPath -Force
+            }
+            finally {
+                if (Test-Path -LiteralPath $configTempPath -PathType Leaf) {
+                    Remove-Item -LiteralPath $configTempPath -Force
+                }
+            }
+        }
     }
 }
 else {
     Write-Warning 'No VaultPath was provided; local config.toml was not written.'
 }
 
-$userPath = Get-PaperFlowUserPath
-$pathEntries = @($userPath -split ';' | Where-Object { $_ })
-$binAlreadyPresent = $false
-foreach ($entry in $pathEntries) {
-    if ($entry.TrimEnd('\') -ieq $BinDir.TrimEnd('\')) {
-        $binAlreadyPresent = $true
-        break
+if ($PSCmdlet.ShouldProcess($WrapperPath, 'Create or update PaperFlow command wrapper')) {
+    [System.IO.Directory]::CreateDirectory($BinDir) | Out-Null
+    $wrapper = "@echo off`r`n`"$VenvPaperFlow`" %*`r`n"
+    $wrapperTempPath = Join-Path $BinDir ('.paperflow-wrapper-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [System.IO.File]::WriteAllText($wrapperTempPath, $wrapper, (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $wrapperTempPath -Destination $WrapperPath -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $wrapperTempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $wrapperTempPath -Force
+        }
     }
 }
-if (-not $binAlreadyPresent) {
+
+$userPath = Get-PaperFlowUserPath
+$pathUpdate = Add-PaperFlowPathEntry -CurrentPath ([string]$userPath) -BinDir $BinDir
+if ($pathUpdate.Changed) {
     $answer = Read-Host "Add '$BinDir' to your user PATH? [y/N]"
     if ($answer -match '^(?i:y|yes)$') {
         if ($PSCmdlet.ShouldProcess('User PATH', "Add $BinDir")) {
-            $newUserPath = if ([string]::IsNullOrWhiteSpace($userPath)) { $BinDir } else { "$userPath;$BinDir" }
-            Set-PaperFlowUserPath -Value $newUserPath
+            Set-PaperFlowUserPath -Value $pathUpdate.Value
             Write-Host 'User PATH updated. Open a new terminal before running paperflow.'
         }
     }

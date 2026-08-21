@@ -16,9 +16,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-windows.ps1"
-UPSTREAM_LICENSE = Path(
-    r"C:\Users\admin\Documents\Codex\2026-08-12\huangkiki-dailypaper-skills-https-github-com\work\dailypaper-skills\LICENSE"
-)
+PATH_HELPER = ROOT / "scripts" / "install-windows-path.ps1"
 
 
 def _read(relative_path: str) -> str:
@@ -57,6 +55,7 @@ def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, 
     scripts.mkdir(parents=True)
     skill_source.mkdir(parents=True)
     shutil.copy2(INSTALLER, scripts / INSTALLER.name)
+    shutil.copy2(PATH_HELPER, scripts / PATH_HELPER.name)
     (project / "pyproject.toml").write_text(
         "[project]\nname = \"paperflow\"\nversion = \"0.1.0\"\n",
         encoding="utf-8",
@@ -182,33 +181,21 @@ def _powershell_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _run_dot_sourced_with_process_path(
+def _run_dot_sourced_installer(
     setup: dict[str, object],
-    initial_path: str,
     *arguments: str,
-    runs: int = 1,
-    input_text: str = "y\n",
-) -> tuple[subprocess.CompletedProcess[str], str]:
-    env = dict(setup["env"])
-    env["PAPERFLOW_INSTALLER_TEST_USER_PATH_VALUE"] = initial_path
+    prologue: str = "",
+    input_text: str = "n\n",
+) -> subprocess.CompletedProcess[str]:
     command_arguments = " ".join(
         argument if argument.startswith("-") else _powershell_literal(argument)
         for argument in arguments
     )
     invocation = ". {0} {1}".format(
-        _powershell_literal(str(setup["installer"])),
-        command_arguments,
+        _powershell_literal(str(setup["installer"])), command_arguments
     ).rstrip()
-    marker = "__PAPERFLOW_TEST_USER_PATH__"
-    command = (
-        "$ErrorActionPreference = 'Stop'; "
-        + "; ".join(invocation for _ in range(runs))
-        + "; [Console]::Out.WriteLine("
-        + _powershell_literal(marker)
-        + " + $env:PAPERFLOW_INSTALLER_TEST_USER_PATH_VALUE)"
-    )
-    registry_path_before = _user_path_from_registry()
-    result = subprocess.run(
+    command = "$ErrorActionPreference = 'Stop'; " + prologue + invocation
+    return subprocess.run(
         [
             str(setup["powershell"]),
             "-NoProfile",
@@ -218,7 +205,7 @@ def _run_dot_sourced_with_process_path(
             command,
         ],
         cwd=Path(setup["project"]),
-        env=env,
+        env=dict(setup["env"]),
         input=input_text,
         capture_output=True,
         text=True,
@@ -227,12 +214,33 @@ def _run_dot_sourced_with_process_path(
         timeout=60,
         check=False,
     )
-    assert _user_path_from_registry() == registry_path_before
-    marker_lines = [
-        line for line in result.stdout.splitlines() if line.startswith(marker)
-    ]
-    assert len(marker_lines) == 1, result.stdout + result.stderr
-    return result, marker_lines[0][len(marker) :]
+
+
+def _invoke_path_function(current_path: str, bin_dir: str) -> dict[str, object]:
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    command = (
+        ". "
+        + _powershell_literal(str(PATH_HELPER))
+        + "; Add-PaperFlowPathEntry -CurrentPath "
+        + _powershell_literal(current_path)
+        + " -BinDir "
+        + _powershell_literal(bin_dir)
+        + " | ConvertTo-Json -Compress"
+    )
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return json.loads(result.stdout)
 
 
 def test_installer_declares_safe_preview_first_interface():
@@ -274,23 +282,42 @@ def test_installer_refreshes_process_path_before_rechecking_installs():
     assert "SetEnvironmentVariable('Path'" not in install_branch[:refresh_position]
 
 
-def test_user_path_backend_has_process_value_seam_and_production_fallback():
+def test_user_path_backend_has_no_test_seam_and_uses_user_scope_only():
     text = INSTALLER.read_text(encoding="utf-8")
 
     assert "function Get-PaperFlowUserPath" in text
     assert "function Set-PaperFlowUserPath" in text
-    assert "PAPERFLOW_INSTALLER_TEST_USER_PATH_VALUE" in text
-    assert "PAPERFLOW_INSTALLER_TEST_USER_PATH_FILE" not in text
-    assert "GetEnvironmentVariables('Process')" in text
-    assert "$processEnvironment.Contains($variableName)" in text
-    assert "WriteAllText" not in text[text.index("function Set-PaperFlowUserPath") : text.index("function Invoke-SelectedPython")]
+    assert "PAPERFLOW_INSTALLER_TEST_USER_PATH" not in text
+    assert "GetEnvironmentVariables('Process')" not in text
     assert "[Environment]::GetEnvironmentVariable('Path', 'User')" in text
     assert "[Environment]::SetEnvironmentVariable('Path', $Value, 'User')" in text
-    assert "$env:PAPERFLOW_INSTALLER_TEST_USER_PATH_VALUE = $Value" in text
+    assert ". (Join-Path $PSScriptRoot 'install-windows-path.ps1')" in text
     path_flow = text[text.index("$userPath = Get-PaperFlowUserPath") :]
     should_process = path_flow.index("$PSCmdlet.ShouldProcess('User PATH'")
-    write_call = path_flow.index("Set-PaperFlowUserPath -Value $newUserPath")
+    write_call = path_flow.index("Set-PaperFlowUserPath -Value $pathUpdate.Value")
     assert should_process < write_call
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize(
+    ("current_path", "bin_dir", "changed", "expected"),
+    [
+        ("initial", r"C:\PaperFlow\bin", True, r"initial;C:\PaperFlow\bin"),
+        ("", r"C:\PaperFlow\bin", True, r"C:\PaperFlow\bin"),
+        (
+            r"initial;c:\paperflow\BIN\\",
+            r"C:\PaperFlow\bin",
+            False,
+            r"initial;c:\paperflow\BIN\\",
+        ),
+    ],
+)
+def test_add_path_entry_is_pure_normalized_and_idempotent(
+    current_path, bin_dir, changed, expected
+):
+    result = _invoke_path_function(current_path, bin_dir)
+
+    assert result == {"Changed": changed, "Value": expected}
 
 
 def test_installer_uses_current_agents_skill_paths_only():
@@ -302,17 +329,131 @@ def test_installer_uses_current_agents_skill_paths_only():
     assert "Join-Path $env:USERPROFILE '.agents\\skills\\paperflow'" in text
 
 
-def test_skill_cleanup_validates_exact_target_before_recursive_delete():
+def test_skill_replacement_uses_validated_sibling_staging_and_backup():
     text = INSTALLER.read_text(encoding="utf-8")
-    cleanup = text[text.index("if ($PSCmdlet.ShouldProcess($SkillTarget") :]
 
-    validation_position = cleanup.index("Assert-SafeSkillTarget")
-    delete_position = cleanup.index(
+    assert "Assert-ValidSkillDirectory -Path $SkillSource" in text
+    assert "paperflow-staging-" in text
+    assert "paperflow-backup-" in text
+    assert "Move-Item -LiteralPath $SkillTarget -Destination $backupPath" in text
+    assert "Move-Item -LiteralPath $stagingPath -Destination $SkillTarget" in text
+    replacement = text[text.index("function Install-PaperFlowSkill") :]
+    target_remove = replacement.index(
         "Remove-Item -LiteralPath $SkillTarget -Recurse -Force"
     )
-    assert validation_position < delete_position
+    staged_move = replacement.index(
+        "Move-Item -LiteralPath $stagingPath -Destination $SkillTarget"
+    )
+    assert target_remove > staged_move
     assert "[System.IO.Path]::GetFullPath" in text
     assert "Join-Path $env:USERPROFILE '.agents\\skills\\paperflow'" in text
+
+
+def test_wrapper_update_is_atomic_and_after_skill_and_config_steps():
+    text = INSTALLER.read_text(encoding="utf-8")
+
+    wrapper_position = text.index("'Create or update PaperFlow command wrapper'")
+    assert wrapper_position > text.index("'Copy PaperFlow Skill for the current user'")
+    assert wrapper_position > text.index("'Create local PaperFlow configuration'")
+    wrapper_flow = text[wrapper_position:]
+    assert "paperflow-wrapper-" in wrapper_flow
+    assert "Move-Item -LiteralPath $wrapperTempPath -Destination $WrapperPath -Force" in wrapper_flow
+    assert "Remove-Item -LiteralPath $wrapperTempPath -Force" in wrapper_flow
+
+
+def test_new_config_write_is_atomic_and_existing_config_is_preserved():
+    text = INSTALLER.read_text(encoding="utf-8")
+
+    assert "Local config preserved:" in text
+    assert "'Create local PaperFlow configuration'" in text
+    config_flow = text[text.index("if ($VaultPath)") :]
+    assert "paperflow-config-" in config_flow
+    assert "Move-Item -LiteralPath $configTempPath -Destination $ConfigPath -Force" in config_flow
+    assert "Remove-Item -LiteralPath $configTempPath -Force" in config_flow
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize("invalid_source", ["missing-directory", "missing-manifest", "empty-manifest"])
+def test_invalid_skill_source_fails_before_mutation_and_preserves_old_install(
+    tmp_path, invalid_source
+):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    skill_source = Path(setup["project"]) / ".agents" / "skills" / "paperflow"
+    if invalid_source == "missing-directory":
+        shutil.rmtree(skill_source)
+    elif invalid_source == "missing-manifest":
+        (skill_source / "SKILL.md").unlink()
+    else:
+        (skill_source / "SKILL.md").write_text("  \r\n", encoding="utf-8")
+    before = _snapshot(tmp_path)
+
+    result = _run_isolated(setup)
+
+    wrapper = Path(setup["local_appdata"]) / "PaperFlow" / "bin" / "paperflow.cmd"
+    assert result.returncode != 0
+    assert "valid non-empty SKILL.md" in result.stderr
+    assert _snapshot(tmp_path) == before
+    assert (Path(setup["skill_target"]) / "SKILL.md").read_text(
+        encoding="utf-8"
+    ) == "old skill\n"
+    assert not wrapper.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_staged_skill_replacement_failure_restores_old_skill_and_cleans_temps(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    skill_target = Path(setup["skill_target"])
+    target_literal = _powershell_literal(str(skill_target))
+    prologue = (
+        f"$paperflowTestTarget = {target_literal}; "
+        "function Move-Item { param([string]$LiteralPath, [string]$Destination, [switch]$Force); "
+        "if (($LiteralPath -like '*.paperflow-staging-*') -and "
+        "[System.StringComparer]::OrdinalIgnoreCase.Equals($Destination, $paperflowTestTarget)) "
+        "{ throw 'controlled staged replacement failure' }; "
+        "Microsoft.PowerShell.Management\\Move-Item @PSBoundParameters }; "
+    )
+
+    result = _run_dot_sourced_installer(setup, prologue=prologue)
+
+    wrapper = Path(setup["local_appdata"]) / "PaperFlow" / "bin" / "paperflow.cmd"
+    assert result.returncode != 0
+    assert "controlled staged replacement failure" in result.stderr
+    assert (skill_target / "SKILL.md").read_text(encoding="utf-8") == "old skill\n"
+    assert (skill_target / "stale.txt").is_file()
+    assert not wrapper.exists()
+    assert not list(skill_target.parent.glob(".paperflow-staging-*"))
+    assert not list(skill_target.parent.glob(".paperflow-backup-*"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_backup_cleanup_failure_rolls_back_new_skill_to_old_skill(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    skill_target = Path(setup["skill_target"])
+    prologue = (
+        "$paperflowBackupFailureInjected = $false; "
+        "function Remove-Item { param([string]$LiteralPath, [switch]$Recurse, [switch]$Force); "
+        "if ((-not $script:paperflowBackupFailureInjected) -and "
+        "($LiteralPath -like '*.paperflow-backup-*')) "
+        "{ $script:paperflowBackupFailureInjected = $true; throw 'controlled backup cleanup failure' }; "
+        "Microsoft.PowerShell.Management\\Remove-Item @PSBoundParameters }; "
+    )
+
+    result = _run_dot_sourced_installer(setup, prologue=prologue)
+
+    wrapper = Path(setup["local_appdata"]) / "PaperFlow" / "bin" / "paperflow.cmd"
+    assert result.returncode != 0
+    assert "controlled backup cleanup failure" in result.stderr
+    assert (skill_target / "SKILL.md").read_text(encoding="utf-8") == "old skill\n"
+    assert (skill_target / "stale.txt").is_file()
+    assert not wrapper.exists()
+    assert not list(skill_target.parent.glob(".paperflow-staging-*"))
+    assert not list(skill_target.parent.glob(".paperflow-backup-*"))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
@@ -465,6 +606,15 @@ def test_formal_install_writes_expected_files_cleans_skill_and_is_idempotent(tmp
     config = Path(setup["appdata"]) / "PaperFlow" / "config.toml"
     skill_target = Path(setup["skill_target"])
     expected_files = (wrapper, config, skill_target / "SKILL.md")
+    assert tomllib.loads(config.read_text(encoding="utf-8"))["vault_path"] == str(
+        Path(setup["vault"]).resolve()
+    )
+    custom_config = (
+        b'vault_path = "D:\\\\CustomVault"\n'
+        b'timezone = "Europe/London"\n\n'
+        b'[keywords]\ncustom = 99\n'
+    )
+    config.write_bytes(custom_config)
     first_contents = {path: path.read_bytes() for path in expected_files}
 
     second = _run_isolated(setup, "-VaultPath", str(setup["vault"]))
@@ -477,9 +627,8 @@ def test_formal_install_writes_expected_files_cleans_skill_and_is_idempotent(tmp
     assert str(project / ".venv" / "Scripts" / "paperflow.exe") in wrapper.read_text(
         encoding="utf-8"
     )
-    assert tomllib.loads(config.read_text(encoding="utf-8"))["vault_path"] == str(
-        Path(setup["vault"]).resolve()
-    )
+    assert "preserved" in second.stdout.casefold()
+    assert config.read_bytes() == custom_config
     assert (skill_target / "SKILL.md").read_text(encoding="utf-8") == "current skill\n"
     assert not (skill_target / "stale.txt").exists()
     assert {path: path.read_bytes() for path in expected_files} == first_contents
@@ -487,86 +636,50 @@ def test_formal_install_writes_expected_files_cleans_skill_and_is_idempotent(tmp
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
-def test_path_consent_appends_bin_in_process_and_not_registry(tmp_path):
+def test_config_replacement_failure_leaves_no_partial_file_or_temp(tmp_path):
     setup = _isolated_installer(
         tmp_path, ("git", "codex", "zotero", "obsidian")
     )
-    bin_dir = Path(setup["local_appdata"]) / "PaperFlow" / "bin"
-
-    result, process_path = _run_dot_sourced_with_process_path(
-        setup,
-        "initial",
-        "-VaultPath",
-        str(setup["vault"]),
+    config_path = Path(setup["appdata"]) / "PaperFlow" / "config.toml"
+    config_literal = _powershell_literal(str(config_path))
+    prologue = (
+        f"$paperflowTestConfig = {config_literal}; "
+        "function Move-Item { param([string]$LiteralPath, [string]$Destination, [switch]$Force); "
+        "if (($LiteralPath -like '*.paperflow-config-*') -and "
+        "[System.StringComparer]::OrdinalIgnoreCase.Equals($Destination, $paperflowTestConfig)) "
+        "{ throw 'controlled config replacement failure' }; "
+        "Microsoft.PowerShell.Management\\Move-Item @PSBoundParameters }; "
     )
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert process_path == f"initial;{bin_dir}"
+    result = _run_dot_sourced_installer(
+        setup, "-VaultPath", str(setup["vault"]), prologue=prologue
+    )
+
+    wrapper = Path(setup["local_appdata"]) / "PaperFlow" / "bin" / "paperflow.cmd"
+    assert result.returncode != 0
+    assert "controlled config replacement failure" in result.stderr
+    assert not config_path.exists()
+    assert not list(config_path.parent.glob(".paperflow-config-*"))
+    assert not wrapper.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
-def test_path_consent_accepts_empty_process_path(tmp_path):
-    setup = _isolated_installer(
-        tmp_path, ("git", "codex", "zotero", "obsidian")
-    )
-    bin_dir = Path(setup["local_appdata"]) / "PaperFlow" / "bin"
-
-    result, process_path = _run_dot_sourced_with_process_path(setup, "")
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert process_path == str(bin_dir)
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
-def test_two_path_consent_runs_in_one_process_do_not_duplicate_bin(tmp_path):
-    setup = _isolated_installer(
-        tmp_path, ("git", "codex", "zotero", "obsidian")
-    )
-    bin_dir = Path(setup["local_appdata"]) / "PaperFlow" / "bin"
-
-    result, process_path = _run_dot_sourced_with_process_path(
-        setup, "initial", runs=2
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert process_path == f"initial;{bin_dir}"
-    assert process_path.casefold().split(";").count(str(bin_dir).casefold()) == 1
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
-def test_existing_path_case_variant_with_trailing_slash_is_not_appended(tmp_path):
-    setup = _isolated_installer(
-        tmp_path, ("git", "codex", "zotero", "obsidian")
-    )
-    bin_dir = Path(setup["local_appdata"]) / "PaperFlow" / "bin"
-    initial_path = f"initial;{str(bin_dir).swapcase()}\\"
-
-    result, process_path = _run_dot_sourced_with_process_path(
-        setup, initial_path
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert process_path == initial_path
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
-def test_whatif_path_consent_changes_neither_process_path_tree_nor_registry(tmp_path):
+def test_whatif_path_consent_changes_neither_tree_nor_registry(tmp_path):
     setup = _isolated_installer(
         tmp_path, ("git", "codex", "zotero", "obsidian")
     )
     before = _snapshot(tmp_path)
 
-    result, process_path = _run_dot_sourced_with_process_path(
+    result = _run_isolated_without_registry_path_change(
         setup,
-        "initial",
         "-WhatIf",
         "-VaultPath",
         str(setup["vault"]),
+        input_text="y\n",
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "What if:" in result.stdout
-    assert process_path == "initial"
     assert _snapshot(tmp_path) == before
 
 
@@ -664,6 +777,8 @@ def test_readme_documents_executable_flow_in_required_order():
     assert "ExecutionPolicy" in text
     assert "zotero.sqlite" in text
     assert "SQLite" in text
+    assert "已有 config.toml 会逐字节保留" in text
+    assert "不会覆盖 keywords、timezone" in text
     assert "免费开源" in text
     assert "绝对永久免费" in text
 
@@ -706,18 +821,11 @@ def test_notice_and_license_have_required_release_attribution():
     )
 
 
-@pytest.mark.skipif(
-    not UPSTREAM_LICENSE.exists(), reason="reviewed upstream checkout is unavailable"
-)
-def test_license_matches_reviewed_upstream_full_text():
-    license_text = _read("LICENSE").replace("\r\n", "\n").replace("\r", "\n")
-    upstream_text = (
-        UPSTREAM_LICENSE.read_text(encoding="utf-8")
-        .replace("\r\n", "\n")
-        .replace("\r", "\n")
-    )
+def test_license_proof_has_no_developer_machine_dependency():
+    test_source = Path(__file__).read_text(encoding="utf-8")
 
-    assert license_text == upstream_text
+    assert ("UPSTREAM" + "_LICENSE") not in test_source
+    assert ("C:" + "\\Users\\") not in test_source
 
 
 def test_pilot_checklist_has_seven_consecutive_uncompleted_dates():

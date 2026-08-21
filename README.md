@@ -52,6 +52,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps
 
 正式安装且 `VaultPath` 有效时会写入 `%APPDATA%\PaperFlow\config.toml`。也可参考以下内容手动编辑：
 
+已有 config.toml 会逐字节保留，重新安装不会覆盖 keywords、timezone 或其他用户修改。
+
 ```toml
 vault_path = "D:\\ObsidianVault"
 top_n = 10
