@@ -394,6 +394,12 @@ function Write-FileBytesAtomically {
     }
 }
 
+function ConvertTo-CmdEmbeddedPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return $Path.Replace('%', '%%')
+}
+
 function Remove-EmptyNormalDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -489,6 +495,23 @@ function Assert-InstallDestinationPreflight {
     }
 }
 
+function Assert-LegacyPaperFlowDirectorySafety {
+    if (-not $DataRootSupplied) {
+        return
+    }
+
+    foreach ($directory in @($LegacyPaperFlowHome, $LegacyBinDir, $LegacyConfigDir)) {
+        if (-not (Test-Path -LiteralPath $directory)) {
+            continue
+        }
+        $item = Get-Item -LiteralPath $directory -Force
+        $isReparsePoint = ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        if (-not $item.PSIsContainer -or -not ($item -is [System.IO.DirectoryInfo]) -or $isReparsePoint) {
+            throw "Legacy PaperFlow directory must be a normal non-reparse directory: $directory"
+        }
+    }
+}
+
 function Install-PaperFlowSkill {
     Assert-SafeSkillTarget
     Assert-ValidSkillDirectory -Path $SkillSource
@@ -561,6 +584,7 @@ if ($VaultPath -and -not $state.Vault) {
 Assert-ValidSkillDirectory -Path $SkillSource
 Assert-SafeSkillTarget
 Assert-InstallDestinationPreflight
+Assert-LegacyPaperFlowDirectorySafety
 
 if ($InstallMissing) {
     if (-not (Test-CommandAvailable 'winget')) {
@@ -687,19 +711,26 @@ else {
 
 if ($PSCmdlet.ShouldProcess($WrapperPath, 'Create or update PaperFlow command wrapper')) {
     [System.IO.Directory]::CreateDirectory($BinDir) | Out-Null
+    $wrapperCommand = ConvertTo-CmdEmbeddedPath -Path $VenvPaperFlow
     if ($DataRootSupplied) {
+        $wrapperHome = ConvertTo-CmdEmbeddedPath -Path $ResolvedDataRoot
+        $wrapperCache = ConvertTo-CmdEmbeddedPath -Path $CacheDir
+        $wrapperTemp = ConvertTo-CmdEmbeddedPath -Path $TempDir
         $wrapper = @"
 @echo off
-set "PAPERFLOW_HOME=$ResolvedDataRoot"
-set "PAPERFLOW_CACHE_DIR=$CacheDir"
-set "TMP=$TempDir"
-set "TEMP=$TempDir"
-"$VenvPaperFlow" %*
+setlocal DisableDelayedExpansion
+set "PAPERFLOW_HOME=$wrapperHome"
+set "PAPERFLOW_CACHE_DIR=$wrapperCache"
+set "TMP=$wrapperTemp"
+set "TEMP=$wrapperTemp"
+"$wrapperCommand" %*
+set "PAPERFLOW_EXIT_CODE=%ERRORLEVEL%"
+endlocal & exit /b %PAPERFLOW_EXIT_CODE%
 "@
         $wrapper = ($wrapper -replace "`r?`n", "`r`n") + "`r`n"
     }
     else {
-        $wrapper = "@echo off`r`n`"$VenvPaperFlow`" %*`r`n"
+        $wrapper = "@echo off`r`nsetlocal DisableDelayedExpansion`r`n`"$wrapperCommand`" %*`r`nset `"PAPERFLOW_EXIT_CODE=%ERRORLEVEL%`"`r`nendlocal & exit /b %PAPERFLOW_EXIT_CODE%`r`n"
     }
     $wrapperTempPath = Join-Path $BinDir ('.paperflow-wrapper-' + [guid]::NewGuid().ToString('N') + '.tmp')
     try {
@@ -758,17 +789,22 @@ $pathMigrationCommitted = $false
 if ($DataRootSupplied) {
     $pathUpdate = Set-PaperFlowPathEntry -CurrentPath ([string]$userPath) -BinDir $BinDir -LegacyBinDir $LegacyBinDir
     if ($pathUpdate.Changed) {
-        $answer = Read-Host "Replace the exact legacy PaperFlow bin with '$BinDir' in your user PATH? [y/N]"
-        if ($answer -match '^(?i:y|yes)$') {
-            if ($PSCmdlet.ShouldProcess('User PATH', "Migrate PaperFlow bin to $BinDir")) {
-                Set-PaperFlowUserPath -Value $pathUpdate.Value
-                Assert-PersistedPaperFlowUserPath -ExpectedValue $pathUpdate.Value
-                $pathMigrationCommitted = $true
-                Write-Host 'User PATH migrated. Open a new terminal before running paperflow.'
-            }
+        if ($WhatIfPreference) {
+            $null = $PSCmdlet.ShouldProcess('User PATH', "Migrate PaperFlow bin to $BinDir")
         }
         else {
-            Write-Host "PATH unchanged. Exact legacy wrapper and config were preserved; run '$WrapperPath' directly or migrate PATH later."
+            $answer = Read-Host "Replace the exact legacy PaperFlow bin with '$BinDir' in your user PATH? [y/N]"
+            if ($answer -match '^(?i:y|yes)$') {
+                if ($PSCmdlet.ShouldProcess('User PATH', "Migrate PaperFlow bin to $BinDir")) {
+                    Set-PaperFlowUserPath -Value $pathUpdate.Value
+                    Assert-PersistedPaperFlowUserPath -ExpectedValue $pathUpdate.Value
+                    $pathMigrationCommitted = $true
+                    Write-Host 'User PATH migrated. Open a new terminal before running paperflow.'
+                }
+            }
+            else {
+                Write-Host "PATH unchanged. Exact legacy wrapper and config were preserved; run '$WrapperPath' directly or migrate PATH later."
+            }
         }
     }
     else {
@@ -780,16 +816,21 @@ if ($DataRootSupplied) {
 else {
     $pathUpdate = Add-PaperFlowPathEntry -CurrentPath ([string]$userPath) -BinDir $BinDir
     if ($pathUpdate.Changed) {
-        $answer = Read-Host "Add '$BinDir' to your user PATH? [y/N]"
-        if ($answer -match '^(?i:y|yes)$') {
-            if ($PSCmdlet.ShouldProcess('User PATH', "Add $BinDir")) {
-                Set-PaperFlowUserPath -Value $pathUpdate.Value
-                Assert-PersistedPaperFlowUserPath -ExpectedValue $pathUpdate.Value
-                Write-Host 'User PATH updated. Open a new terminal before running paperflow.'
-            }
+        if ($WhatIfPreference) {
+            $null = $PSCmdlet.ShouldProcess('User PATH', "Add $BinDir")
         }
         else {
-            Write-Host "PATH unchanged. Run '$WrapperPath' directly or add the bin directory later."
+            $answer = Read-Host "Add '$BinDir' to your user PATH? [y/N]"
+            if ($answer -match '^(?i:y|yes)$') {
+                if ($PSCmdlet.ShouldProcess('User PATH', "Add $BinDir")) {
+                    Set-PaperFlowUserPath -Value $pathUpdate.Value
+                    Assert-PersistedPaperFlowUserPath -ExpectedValue $pathUpdate.Value
+                    Write-Host 'User PATH updated. Open a new terminal before running paperflow.'
+                }
+            }
+            else {
+                Write-Host "PATH unchanged. Run '$WrapperPath' directly or add the bin directory later."
+            }
         }
     }
     else {
