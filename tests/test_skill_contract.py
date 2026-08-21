@@ -85,6 +85,24 @@ def test_skill_encodes_result_save_exit_and_safety_contracts():
         assert rule in folded
 
 
+def test_skill_daily_write_behavior_and_doctor_read_only_are_unambiguous():
+    text = _skill_text()
+    daily = next(line for line in text.splitlines() if line.startswith("- Daily:"))
+    doctor = next(
+        line for line in text.splitlines() if line.startswith("- Diagnostics:")
+    )
+    daily_folded = daily.casefold()
+
+    for requirement in ("writes", "obsidian", "report_path", "--no-write"):
+        assert requirement in daily_folded
+    assert "atomic" in daily_folded
+    assert "same-day idempotent" in daily_folded
+    assert "only `--no-write`" in daily_folded
+    assert "read-only" not in daily_folded
+    assert "read-only" in doctor.casefold()
+    assert text.casefold().count("read-only") == 1
+
+
 def test_skill_is_concise_and_has_required_sections():
     text = _skill_text()
     assert len(re.findall(r"\b[\w'-]+\b", text)) < 500
