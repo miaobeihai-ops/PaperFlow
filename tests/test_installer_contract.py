@@ -51,6 +51,15 @@ def _snapshot(root: Path) -> dict[str, bytes | None]:
     }
 
 
+def _local_config_bytes(vault_path: Path) -> bytes:
+    return (
+        f"vault_path = {json.dumps(str(vault_path))}\n"
+        'arxiv_categories = ["cs.AI"]\n'
+        "\n[keywords]\n"
+        "robotics = 5\n"
+    ).encode("utf-8")
+
+
 def _write_command(fake_bin: Path, name: str, body: str = "@exit /b 0\r\n") -> None:
     (fake_bin / f"{name}.cmd").write_text(body, encoding="utf-8")
 
@@ -190,6 +199,7 @@ def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, 
     (project / "requirements.lock").write_text(
         "httpx==0.28.1\n", encoding="utf-8"
     )
+    shutil.copytree(ROOT / "src" / "paperflow", project / "src" / "paperflow")
     (skill_source / "SKILL.md").write_text("current skill\n", encoding="utf-8")
 
     fake_bin = tmp_path / "fake-bin"
@@ -229,9 +239,10 @@ def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, 
     )
     py_body = (
         "@echo off\r\n"
-        'if "%~1"=="-c" (echo 3.12.7& exit /b 0)\r\n'
-        f'if "%~1"=="-m" if "%~2"=="venv" ("{source_python}" -m venv "%~3"& exit /b %ERRORLEVEL%)\r\n'
-        "exit /b 1\r\n"
+        'if "%~1"=="-c" if "%~2"=="import platform; print(platform.python_version())" '
+        "(echo 3.12.7& exit /b 0)\r\n"
+        f'"{source_python}" %*\r\n'
+        "exit /b %ERRORLEVEL%\r\n"
     )
     _write_command(fake_bin, "py", py_body)
     for command in commands:
@@ -717,6 +728,165 @@ def test_data_root_overlap_is_rejected_before_mutation(
     assert _snapshot(tmp_path) == before
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize("mode", ["check-only", "formal"])
+@pytest.mark.parametrize("config_source", ["destination", "legacy"])
+def test_config_derived_vault_overlap_is_rejected_before_mutation(
+    tmp_path, config_source, mode
+):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    if config_source == "destination":
+        data_root = tmp_path / "Existing DataRoot"
+        config_path = data_root / "config" / "config.toml"
+        config_path.parent.mkdir(parents=True)
+        effective_vault = data_root
+    else:
+        effective_vault = tmp_path / "Vault Parent"
+        effective_vault.mkdir()
+        data_root = effective_vault / "Nested DataRoot"
+        config_path = Path(setup["appdata"]) / "PaperFlow" / "config.toml"
+        config_path.parent.mkdir(parents=True)
+    config_path.write_bytes(_local_config_bytes(effective_vault))
+    sentinel = effective_vault / "config-overlap-sentinel.txt"
+    sentinel_bytes = f"preserve {config_source} {mode}".encode("utf-8")
+    sentinel.write_bytes(sentinel_bytes)
+    before = _snapshot(tmp_path)
+    arguments = ["-DataRoot", str(data_root)]
+    if mode == "check-only":
+        arguments.insert(0, "-CheckOnly")
+
+    result = _run_isolated(setup, *arguments, input_text="n\n")
+
+    assert result.returncode != 0
+    assert "DataRoot must not overlap effective Vault" in result.stderr
+    assert sentinel.read_bytes() == sentinel_bytes
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize("mode", ["check-only", "formal"])
+@pytest.mark.parametrize("config_source", ["destination", "legacy"])
+def test_disjoint_config_derived_vault_is_accepted_without_vault_argument(
+    tmp_path, config_source, mode
+):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    if config_source == "destination":
+        config_path = data_root / "config" / "config.toml"
+    else:
+        config_path = Path(setup["appdata"]) / "PaperFlow" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_bytes(_local_config_bytes(Path(setup["vault"])))
+    before = _snapshot(tmp_path)
+    arguments = ["-DataRoot", str(data_root)]
+    if mode == "check-only":
+        arguments.insert(0, "-CheckOnly")
+
+    result = _run_isolated(setup, *arguments, input_text="n\n")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    if mode == "check-only":
+        assert _snapshot(tmp_path) == before
+    else:
+        assert (data_root / "bin" / "paperflow.cmd").is_file()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize("mode", ["check-only", "formal"])
+@pytest.mark.parametrize(
+    ("config_source", "config_bytes"),
+    [
+        ("destination", b"vault_path = [\n"),
+        (
+            "legacy",
+            b'vault_path = "relative-vault"\n\n[keywords]\nrobotics = 5\n',
+        ),
+    ],
+)
+def test_invalid_effective_config_fails_before_mutation(
+    tmp_path, config_source, config_bytes, mode
+):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    if config_source == "destination":
+        config_path = data_root / "config" / "config.toml"
+    else:
+        config_path = Path(setup["appdata"]) / "PaperFlow" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_bytes(config_bytes)
+    sentinel = tmp_path / "invalid-config-sentinel.txt"
+    sentinel.write_bytes(b"preserve invalid config state")
+    before = _snapshot(tmp_path)
+    arguments = ["-DataRoot", str(data_root)]
+    if mode == "check-only":
+        arguments.insert(0, "-CheckOnly")
+
+    result = _run_isolated(setup, *arguments, input_text="n\n")
+
+    assert result.returncode != 0
+    assert "Effective PaperFlow config is invalid" in result.stderr
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize("mode", ["check-only", "formal"])
+def test_existing_config_vault_takes_precedence_over_explicit_vault(tmp_path, mode):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    config_path = data_root / "config" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_bytes(_local_config_bytes(Path(setup["vault"])))
+    before = _snapshot(tmp_path)
+    arguments = ["-DataRoot", str(data_root), "-VaultPath", str(data_root)]
+    if mode == "check-only":
+        arguments.insert(0, "-CheckOnly")
+
+    result = _run_isolated(setup, *arguments, input_text="n\n")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    if mode == "check-only":
+        assert _snapshot(tmp_path) == before
+    else:
+        assert (data_root / "bin" / "paperflow.cmd").is_file()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_existing_config_vault_takes_precedence_over_missing_explicit_vault(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    config_path = data_root / "config" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_bytes(_local_config_bytes(Path(setup["vault"])))
+    missing_explicit_vault = tmp_path / "not-an-existing-vault"
+
+    result = _run_isolated(
+        setup,
+        "-DataRoot",
+        str(data_root),
+        "-VaultPath",
+        str(missing_explicit_vault),
+        input_text="n\n",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (data_root / "bin" / "paperflow.cmd").is_file()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction behavior test")
 @pytest.mark.parametrize("mode", ["check-only", "formal"])
 def test_data_root_reparse_ancestor_is_rejected_before_mutation(tmp_path, mode):
@@ -772,6 +942,23 @@ def test_installer_uses_only_allowlisted_exact_winget_packages():
     assert "winget install --id $PackageId --exact" in text
     assert "Install-WingetPackage -PackageId" in text
     assert "[ValidateSet('Git.Git', 'Python.Python.3.11', 'DigitalScholar.Zotero', 'Obsidian.Obsidian')]" in text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell structure test")
+def test_effective_config_preflight_uses_real_loader_without_temp_file():
+    text = INSTALLER.read_text(encoding="utf-8")
+    start, end = _powershell_function_extent(
+        INSTALLER, "Resolve-PaperFlowConfigVaultPath"
+    )
+    function = text[start:end]
+
+    assert "from paperflow.config import load_local_config" in function
+    assert "load_local_config(Path(sys.argv[1]))" in function
+    assert "$env:PYTHONPATH" in function
+    assert "finally" in function
+    assert "SetEnvironmentVariable('PYTHONPATH', $null, 'Process')" in function
+    assert "New-TemporaryFile" not in function
+    assert "WriteAllText" not in function
 
 
 def test_installer_refreshes_process_path_before_rechecking_installs():
@@ -1429,7 +1616,11 @@ def test_data_root_copies_legacy_config_bytes_atomically_without_overwriting(tmp
     data_root = tmp_path / "PaperFlow Data"
     legacy_config = Path(setup["appdata"]) / "PaperFlow" / "config.toml"
     legacy_config.parent.mkdir(parents=True)
-    legacy_bytes = b'vault_path = "D:\\\\Legacy"\r\n# preserve bytes: \xff\x00\r\n'
+    legacy_bytes = (
+        b'vault_path = "D:\\\\Legacy"\r\n'
+        b'custom = 7\r\n\r\n[keywords]\r\nrobotics = 5\r\n'
+        b'# preserve bytes: caf\xc3\xa9\r\n'
+    )
     legacy_config.write_bytes(legacy_bytes)
 
     first = _run_isolated(setup, "-DataRoot", str(data_root))
@@ -1439,7 +1630,10 @@ def test_data_root_copies_legacy_config_bytes_atomically_without_overwriting(tmp
     assert legacy_config.read_bytes() == legacy_bytes
     assert not list(new_config.parent.glob(".paperflow-config-*"))
 
-    replacement = b'vault_path = "D:\\\\KeepNew"\ncustom = true\n'
+    replacement = (
+        b'vault_path = "D:\\\\KeepNew"\ncustom = true\n\n'
+        b'[keywords]\nrobotics = 9\n'
+    )
     new_config.write_bytes(replacement)
     legacy_config.write_bytes(b"changed legacy")
     second = _run_isolated(setup, "-DataRoot", str(data_root))
@@ -1631,7 +1825,10 @@ def _write_legacy_install(
     legacy_wrapper.parent.mkdir(parents=True)
     legacy_config.parent.mkdir(parents=True)
     wrapper_bytes = b"@echo off\r\necho exact legacy wrapper\r\n"
-    config_bytes = b'vault_path = "D:\\\\ExactLegacy"\r\ncustom = 7\r\n'
+    config_bytes = (
+        b'vault_path = "D:\\\\ExactLegacy"\r\ncustom = 7\r\n\r\n'
+        b'[keywords]\r\nrobotics = 5\r\n'
+    )
     legacy_wrapper.write_bytes(wrapper_bytes)
     legacy_config.write_bytes(config_bytes)
     if keep_neighbor:
@@ -1742,7 +1939,10 @@ def test_successful_path_migration_preserves_conflicting_legacy_config(tmp_path)
     data_root = tmp_path / "PaperFlow Data"
     new_config = data_root / "config" / "config.toml"
     new_config.parent.mkdir(parents=True)
-    new_bytes = b'vault_path = "D:\\\\NewVault"\nnew = true\n'
+    new_bytes = (
+        b'vault_path = "D:\\\\NewVault"\nnew = true\n\n'
+        b'[keywords]\nrobotics = 5\n'
+    )
     new_config.write_bytes(new_bytes)
     legacy_wrapper, legacy_config, _, legacy_bytes = _write_legacy_install(setup)
     initial_path = rf"C:\Other;{legacy_wrapper.parent}"
@@ -2303,6 +2503,7 @@ def test_readme_documents_existing_vault_and_safe_legacy_migration():
     assert "不支持 UNC" in install
     assert "不能包含分号" in install
     assert "不得与项目目录" in install
+    assert "现有或待迁移 config.toml 中的 vault_path" in install
     assert "paperflow.cmd --json doctor" in install
     assert "回滚并读回验证" in install
     assert "未知相邻文件始终保留" in install

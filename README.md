@@ -38,7 +38,7 @@ PowerShell 会把 `$env:USERPROFILE\Documents\Obsidian Vault` 按当前用户分
 .\scripts\install-windows.ps1 -DataRoot "D:\PaperFlowData" -VaultPath "$env:USERPROFILE\Documents\Obsidian Vault"
 ```
 
-`-DataRoot` 必须是带盘符和根分隔符的本地绝对路径（drive-absolute local path，例如 `D:\PaperFlowData`），不支持 UNC、盘符相对路径或根相对路径，也不能包含分号。数据根目录及其现有祖先不能是重解析点；它不得与项目目录（包括 `.venv` 和 Skill 源）、Skill 安装目标或 Vault 构成相同、父级或子级重叠关系。`D:\PaperFlowData` 与独立的 `D:\PaperFlow` 属于边界清晰的相邻目录，可以使用。
+`-DataRoot` 必须是带盘符和根分隔符的本地绝对路径（drive-absolute local path，例如 `D:\PaperFlowData`），不支持 UNC、盘符相对路径或根相对路径，也不能包含分号。数据根目录及其现有祖先不能是重解析点；它不得与项目目录（包括 `.venv` 和 Skill 源）、Skill 安装目标或 Vault 构成相同、父级或子级重叠关系。Vault 校验采用安装器实际会保留或生成的配置优先级，因此现有或待迁移 config.toml 中的 vault_path 也会在任何写入前解析并检查；只有没有这两类配置时才使用命令行 `-VaultPath`。`D:\PaperFlowData` 与独立的 `D:\PaperFlow` 属于边界清晰的相邻目录，可以使用。
 
 安装后的职责边界如下：
 
