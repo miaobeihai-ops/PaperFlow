@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -31,3 +32,11 @@ class RankedPaper:
 class SourceFailure:
     source: str
     message: str
+
+
+@dataclass(frozen=True)
+class DailyResult:
+    date: str
+    papers: tuple[RankedPaper, ...]
+    failures: tuple[SourceFailure, ...]
+    report_path: Path | None
