@@ -337,14 +337,9 @@ def test_skill_replacement_uses_validated_sibling_staging_and_backup():
     assert "paperflow-backup-" in text
     assert "Move-Item -LiteralPath $SkillTarget -Destination $backupPath" in text
     assert "Move-Item -LiteralPath $stagingPath -Destination $SkillTarget" in text
-    replacement = text[text.index("function Install-PaperFlowSkill") :]
-    target_remove = replacement.index(
-        "Remove-Item -LiteralPath $SkillTarget -Recurse -Force"
-    )
-    staged_move = replacement.index(
-        "Move-Item -LiteralPath $stagingPath -Destination $SkillTarget"
-    )
-    assert target_remove > staged_move
+    assert "Remove-Item -LiteralPath $SkillTarget -Recurse -Force" not in text
+    assert "$skillCommitted = $true" in text
+    assert "Could not remove the previous PaperFlow Skill backup" in text
     assert "[System.IO.Path]::GetFullPath" in text
     assert "Join-Path $env:USERPROFILE '.agents\\skills\\paperflow'" in text
 
@@ -430,7 +425,7 @@ def test_staged_skill_replacement_failure_restores_old_skill_and_cleans_temps(tm
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
-def test_backup_cleanup_failure_rolls_back_new_skill_to_old_skill(tmp_path):
+def test_partial_backup_cleanup_failure_keeps_committed_new_skill(tmp_path):
     setup = _isolated_installer(
         tmp_path, ("git", "codex", "zotero", "obsidian")
     )
@@ -440,20 +435,86 @@ def test_backup_cleanup_failure_rolls_back_new_skill_to_old_skill(tmp_path):
         "function Remove-Item { param([string]$LiteralPath, [switch]$Recurse, [switch]$Force); "
         "if ((-not $script:paperflowBackupFailureInjected) -and "
         "($LiteralPath -like '*.paperflow-backup-*')) "
-        "{ $script:paperflowBackupFailureInjected = $true; throw 'controlled backup cleanup failure' }; "
+        "{ $script:paperflowBackupFailureInjected = $true; "
+        "Microsoft.PowerShell.Management\\Remove-Item -LiteralPath "
+        "(Join-Path $LiteralPath 'stale.txt') -Force; "
+        "throw 'controlled partial backup cleanup failure' }; "
         "Microsoft.PowerShell.Management\\Remove-Item @PSBoundParameters }; "
     )
 
     result = _run_dot_sourced_installer(setup, prologue=prologue)
 
     wrapper = Path(setup["local_appdata"]) / "PaperFlow" / "bin" / "paperflow.cmd"
-    assert result.returncode != 0
-    assert "controlled backup cleanup failure" in result.stderr
-    assert (skill_target / "SKILL.md").read_text(encoding="utf-8") == "old skill\n"
-    assert (skill_target / "stale.txt").is_file()
-    assert not wrapper.exists()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Could not remove the previous PaperFlow Skill backup" in result.stdout
+    assert "controlled partial backup cleanup failure" in " ".join(
+        result.stdout.split()
+    )
+    assert (skill_target / "SKILL.md").read_text(encoding="utf-8") == "current skill\n"
+    assert not (skill_target / "stale.txt").exists()
+    assert wrapper.is_file()
     assert not list(skill_target.parent.glob(".paperflow-staging-*"))
-    assert not list(skill_target.parent.glob(".paperflow-backup-*"))
+    backups = list(skill_target.parent.glob(".paperflow-backup-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "SKILL.md").read_text(encoding="utf-8") == "old skill\n"
+    assert not (backups[0] / "stale.txt").exists()
+
+
+def test_destination_preflight_runs_before_any_install_mutation():
+    text = INSTALLER.read_text(encoding="utf-8")
+    main = text[text.index("$state = Get-InstallationState") :]
+
+    preflight = main.index("Assert-InstallDestinationPreflight")
+    assert preflight < main.index("if ($InstallMissing)")
+    assert preflight < main.index("'Create PaperFlow virtual environment'")
+    assert "Assert-RegularFileOrMissing -Path $ConfigPath" in text
+    assert "Assert-RegularFileOrMissing -Path $WrapperPath" in text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize(
+    "conflict_kind",
+    [
+        "config-target-directory",
+        "wrapper-target-directory",
+        "config-parent-file",
+        "wrapper-parent-file",
+    ],
+)
+def test_destination_conflict_fails_before_all_persistent_mutations(
+    tmp_path, conflict_kind
+):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    config_dir = Path(setup["appdata"]) / "PaperFlow"
+    config_path = config_dir / "config.toml"
+    bin_dir = Path(setup["local_appdata"]) / "PaperFlow" / "bin"
+    wrapper_path = bin_dir / "paperflow.cmd"
+    if conflict_kind == "config-target-directory":
+        config_path.mkdir(parents=True)
+    elif conflict_kind == "wrapper-target-directory":
+        wrapper_path.mkdir(parents=True)
+    elif conflict_kind == "config-parent-file":
+        config_dir.write_text("blocking file", encoding="utf-8")
+    else:
+        bin_dir.parent.mkdir(parents=True)
+        bin_dir.write_text("blocking file", encoding="utf-8")
+    before = _snapshot(tmp_path)
+
+    result = _run_isolated_without_registry_path_change(
+        setup, "-VaultPath", str(setup["vault"]), input_text="n\n"
+    )
+
+    assert result.returncode != 0
+    assert "must be a regular file or not exist" in result.stderr
+    assert _snapshot(tmp_path) == before
+    assert not (Path(setup["project"]) / ".venv").exists()
+    assert (Path(setup["skill_target"]) / "SKILL.md").read_text(
+        encoding="utf-8"
+    ) == "old skill\n"
+    assert (Path(setup["skill_target"]) / "stale.txt").is_file()
+    assert not list(Path(setup["skill_target"]).parent.glob(".paperflow-*-*"))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")

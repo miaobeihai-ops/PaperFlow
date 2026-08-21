@@ -222,6 +222,41 @@ function Assert-SafeSkillSiblingPath {
     }
 }
 
+function Assert-RegularFileOrMissing {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if (Test-Path -LiteralPath $Path) {
+        $item = Get-Item -LiteralPath $Path -Force
+        $isReparsePoint = ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        if ($item.PSIsContainer -or -not ($item -is [System.IO.FileInfo]) -or $isReparsePoint) {
+            throw "$Name must be a regular file or not exist: $Path"
+        }
+    }
+
+    $existingParent = Split-Path -Parent $Path
+    while (-not [string]::IsNullOrWhiteSpace($existingParent) -and
+        -not (Test-Path -LiteralPath $existingParent)) {
+        $nextParent = Split-Path -Parent $existingParent
+        if ($nextParent -eq $existingParent) {
+            break
+        }
+        $existingParent = $nextParent
+    }
+    if (-not [string]::IsNullOrWhiteSpace($existingParent) -and
+        (Test-Path -LiteralPath $existingParent) -and
+        -not (Test-Path -LiteralPath $existingParent -PathType Container)) {
+        throw "$Name parent must be a directory; destination must be a regular file or not exist: $Path"
+    }
+}
+
+function Assert-InstallDestinationPreflight {
+    Assert-RegularFileOrMissing -Path $ConfigPath -Name 'PaperFlow config'
+    Assert-RegularFileOrMissing -Path $WrapperPath -Name 'PaperFlow wrapper'
+}
+
 function Install-PaperFlowSkill {
     Assert-SafeSkillTarget
     Assert-ValidSkillDirectory -Path $SkillSource
@@ -231,7 +266,7 @@ function Install-PaperFlowSkill {
     Assert-SafeSkillSiblingPath -Path $stagingPath -Kind 'staging'
     Assert-SafeSkillSiblingPath -Path $backupPath -Kind 'backup'
     $backupCreated = $false
-    $replacementInstalled = $false
+    $skillCommitted = $false
 
     try {
         [System.IO.Directory]::CreateDirectory($skillParent) | Out-Null
@@ -242,21 +277,12 @@ function Install-PaperFlowSkill {
             $backupCreated = $true
         }
         Move-Item -LiteralPath $stagingPath -Destination $SkillTarget
-        $replacementInstalled = $true
-        if ($backupCreated) {
-            Assert-SafeSkillSiblingPath -Path $backupPath -Kind 'backup'
-            Remove-Item -LiteralPath $backupPath -Recurse -Force
-            $backupCreated = $false
-        }
+        $skillCommitted = $true
     }
     catch {
         $replacementError = $_
         if ($backupCreated) {
             try {
-                if ($replacementInstalled -and (Test-Path -LiteralPath $SkillTarget)) {
-                    Assert-SafeSkillTarget
-                    Remove-Item -LiteralPath $SkillTarget -Recurse -Force
-                }
                 if (-not (Test-Path -LiteralPath $SkillTarget)) {
                     Move-Item -LiteralPath $backupPath -Destination $SkillTarget
                     $backupCreated = $false
@@ -271,6 +297,16 @@ function Install-PaperFlowSkill {
             Remove-Item -LiteralPath $stagingPath -Recurse -Force
         }
         throw $replacementError
+    }
+
+    if ($skillCommitted -and $backupCreated) {
+        try {
+            Assert-SafeSkillSiblingPath -Path $backupPath -Kind 'backup'
+            Remove-Item -LiteralPath $backupPath -Recurse -Force
+        }
+        catch {
+            Write-Warning "Could not remove the previous PaperFlow Skill backup; the committed new Skill remains active: $($_.Exception.Message)"
+        }
     }
 }
 
@@ -289,6 +325,7 @@ if ($VaultPath -and -not $state.Vault) {
 
 Assert-ValidSkillDirectory -Path $SkillSource
 Assert-SafeSkillTarget
+Assert-InstallDestinationPreflight
 
 if ($InstallMissing) {
     if (-not (Test-CommandAvailable 'winget')) {
