@@ -226,6 +226,15 @@ def test_parse_arxiv_accepts_empty_atom_feed():
     assert parse_arxiv_feed(xml) == []
 
 
+def test_parse_arxiv_malformed_xml_raises_sanitized_value_error():
+    xml = "<feed>PRIVATE_MALFORMED_XML"
+
+    with pytest.raises(ValueError, match="^arXiv response was invalid$") as exc_info:
+        parse_arxiv_feed(xml)
+
+    assert "PRIVATE_MALFORMED_XML" not in str(exc_info.value)
+
+
 def test_fetch_arxiv_uses_one_batched_category_request():
     calls = []
 

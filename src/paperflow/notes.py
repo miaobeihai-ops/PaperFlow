@@ -14,6 +14,11 @@ class NoteExists(FileExistsError):
     pass
 
 
+def paper_note_path(vault_path: Path, value: str) -> Path:
+    arxiv_id = canonical_arxiv_id(value)
+    return Path(vault_path) / "PaperFlow" / "Papers" / f"{arxiv_id}.md"
+
+
 def _yaml(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -54,8 +59,8 @@ def write_paper_note(
     created: date | None = None,
 ) -> Path:
     arxiv_id = canonical_arxiv_id(paper.arxiv_id)
-    papers = Path(vault_path) / "PaperFlow" / "Papers"
-    target = papers / f"{arxiv_id}.md"
+    target = paper_note_path(vault_path, arxiv_id)
+    papers = target.parent
     if target.exists() and not force:
         raise NoteExists("paper note already exists")
 

@@ -31,7 +31,10 @@ def _text(node: ET.Element, name: str) -> str:
 
 def parse_arxiv_feed(xml: str) -> list[Paper]:
     result: list[Paper] = []
-    root = ET.fromstring(xml)
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError as exc:
+        raise ValueError("arXiv response was invalid") from exc
     if root.tag != f"{{{ATOM}}}feed":
         raise ValueError("arXiv payload root must be an Atom feed")
 

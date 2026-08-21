@@ -486,3 +486,53 @@ def test_note_network_error_is_sanitized(config, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "PRIVATE" not in output
     assert json.loads(output) == {"ok": False, "error": "arXiv request failed"}
+
+
+def test_note_existing_canonical_path_skips_client_and_fetch(
+    config, monkeypatch, capsys
+):
+    note = config.vault_path / "PaperFlow" / "Papers" / "2608.12345.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("existing", encoding="utf-8")
+    monkeypatch.delenv("PAPERFLOW_PRIVATE_CONFIG_JSON", raising=False)
+    monkeypatch.setattr("paperflow.cli.load_local_config", lambda: config)
+    monkeypatch.setattr(
+        "paperflow.cli.httpx.Client",
+        lambda: pytest.fail("existing note must not create a client"),
+    )
+    monkeypatch.setattr(
+        "paperflow.cli.fetch_arxiv_by_id",
+        lambda *_args: pytest.fail("existing note must not fetch"),
+    )
+
+    assert main(["note", "https://arxiv.org/abs/2608.12345v2", "--json"]) == 4
+
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": False,
+        "error": "paper note already exists",
+    }
+
+
+def test_note_malformed_arxiv_xml_is_sanitized(config, monkeypatch, capsys):
+    private_xml = "<feed>PRIVATE_MALFORMED_XML"
+    real_client = httpx.Client
+
+    def client_factory():
+        return real_client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, text=private_xml)
+            )
+        )
+
+    monkeypatch.delenv("PAPERFLOW_PRIVATE_CONFIG_JSON", raising=False)
+    monkeypatch.setattr("paperflow.cli.load_local_config", lambda: config)
+    monkeypatch.setattr("paperflow.cli.httpx.Client", client_factory)
+
+    assert main(["note", "2608.12345", "--json"]) == 3
+
+    output = capsys.readouterr().out
+    assert "PRIVATE_MALFORMED_XML" not in output
+    assert json.loads(output) == {
+        "ok": False,
+        "error": "arXiv response was invalid",
+    }

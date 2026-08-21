@@ -24,7 +24,7 @@ from paperflow.config import (
 from paperflow.daily import AllSourcesFailed, run_daily
 from paperflow.models import DailyResult, SourceFailure
 from paperflow.normalize import canonical_arxiv_id
-from paperflow.notes import NoteExists, write_paper_note
+from paperflow.notes import NoteExists, paper_note_path, write_paper_note
 from paperflow.search import search_history
 
 
@@ -219,6 +219,8 @@ def _run_note(args: argparse.Namespace) -> int:
             arxiv_id = canonical_arxiv_id(args.arxiv_id)
         except ValueError as exc:
             raise ConfigError("invalid arXiv identifier") from exc
+        if not args.force and paper_note_path(config.vault_path, arxiv_id).exists():
+            raise NoteExists("paper note already exists")
         with httpx.Client() as client:
             paper = fetch_arxiv_by_id(client, arxiv_id)
         note_path = write_paper_note(
@@ -238,7 +240,15 @@ def _run_note(args: argparse.Namespace) -> int:
     except httpx.HTTPError:
         _print_error(args, "arXiv request failed")
         return 3
-    except (ValueError, OSError):
+    except ValueError as exc:
+        message = (
+            "arXiv response was invalid"
+            if str(exc) == "arXiv response was invalid"
+            else "paper note could not be created"
+        )
+        _print_error(args, message)
+        return 3
+    except OSError:
         _print_error(args, "paper note could not be created")
         return 3
 

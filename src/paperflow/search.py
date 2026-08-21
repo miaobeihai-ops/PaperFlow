@@ -6,7 +6,8 @@ import re
 
 
 _REPORT_NAME = re.compile(r"^(\d{4}-\d{2}-\d{2})\.md$")
-_SECTION = re.compile(r"^##\s+\d+\.\s+(.+?)\s*$", re.MULTILINE)
+_LEVEL_TWO_HEADING = re.compile(r"^##\s+.*$", re.MULTILINE)
+_PAPER_HEADING = re.compile(r"^##\s+\d+\.\s+(.+?)\s*$")
 _ARXIV_ID = re.compile(r"^-\s+arxiv_id:\s+`(\d{4}\.\d{4,5})`\s*$", re.MULTILINE)
 
 
@@ -41,8 +42,11 @@ def search_history(vault_path: Path, query: str) -> list[dict[str, str]]:
             content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             continue
-        sections = list(_SECTION.finditer(content))
+        sections = list(_LEVEL_TWO_HEADING.finditer(content))
         for index, section in enumerate(sections):
+            paper_heading = _PAPER_HEADING.fullmatch(section.group())
+            if paper_heading is None:
+                continue
             end = sections[index + 1].start() if index + 1 < len(sections) else len(content)
             body = content[section.start():end]
             identifier = _ARXIV_ID.search(body)
@@ -50,7 +54,7 @@ def search_history(vault_path: Path, query: str) -> list[dict[str, str]]:
                 continue
             results.append(
                 {
-                    "title": section.group(1).strip(),
+                    "title": paper_heading.group(1).strip(),
                     "arxiv_id": identifier.group(1),
                     "path": str(path),
                 }
