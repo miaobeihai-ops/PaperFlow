@@ -8,7 +8,7 @@ import tempfile
 
 from paperflow.models import Paper
 from paperflow.normalize import canonical_arxiv_id
-from paperflow.report import escape_markdown_text
+from paperflow.report import escape_markdown_block, escape_markdown_text
 
 
 class NoteExists(FileExistsError):
@@ -26,7 +26,7 @@ def _yaml(value: object) -> str:
 
 def _render_note(paper: Paper, arxiv_id: str, created: date) -> str:
     title = escape_markdown_text(paper.title)
-    abstract = escape_markdown_text(paper.abstract)
+    abstract = escape_markdown_block(paper.abstract)
     lines = [
         "---",
         f"arxiv_id: {_yaml(arxiv_id)}",

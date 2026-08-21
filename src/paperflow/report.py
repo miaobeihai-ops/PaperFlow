@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html import escape
+import re
 from urllib.parse import quote
 
 from paperflow import __version__
@@ -9,6 +10,12 @@ from paperflow.models import RankedPaper, SourceFailure
 
 
 _MARKDOWN_ESCAPES = frozenset(r"\\`*_[]<>()!|~{}&")
+_BLOCK_MARKER = re.compile(
+    r"^(?P<indent> {0,3})(?:"
+    r"(?P<simple>#+|>|[-+](?=\s|$)|-{3,}(?=\s*$))"
+    r"|(?P<ordered>\d+)(?P<delimiter>[.)])(?=\s|$)"
+    r")"
+)
 
 
 def _generated_at(now: datetime | None) -> str:
@@ -75,6 +82,27 @@ def escape_markdown_text(value: str) -> str:
         else:
             rendered.append(character)
     return "".join(rendered)
+
+
+def escape_markdown_block(value: str) -> str:
+    rendered = escape_markdown_text(value)
+    first_line = value.split("\n", 1)[0].split("\r", 1)[0]
+    leading_spaces = len(first_line) - len(first_line.lstrip(" "))
+    if leading_spaces >= 4:
+        return f"&#32;{rendered[1:]}"
+
+    marker = _BLOCK_MARKER.match(first_line)
+    if marker is None:
+        return rendered
+    if marker.group("delimiter") == ".":
+        position = len(marker.group("indent")) + len(marker.group("ordered"))
+        return f"{rendered[:position]}\\{rendered[position:]}"
+    if marker.group("delimiter") == ")":
+        return rendered
+    position = len(marker.group("indent"))
+    if rendered[position:].startswith("\\"):
+        return rendered
+    return f"{rendered[:position]}\\{rendered[position:]}"
 
 
 def _code_span(value: str) -> str:

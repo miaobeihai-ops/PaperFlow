@@ -149,6 +149,36 @@ def test_write_paper_note_escapes_markdown_syntax_and_controls_in_body(tmp_path)
     assert r"\!\[\]\(tracker\)\n\<img src=x\>\u0085tail" in body
 
 
+@pytest.mark.parametrize(
+    ("abstract", "expected"),
+    [
+        ("# Injected", r"\# Injected"),
+        ("> quoted", r"\> quoted"),
+        ("---", r"\---"),
+        ("- item", r"\- item"),
+        ("+ item", r"\+ item"),
+        ("1. item", r"1\. item"),
+        ("1) item", r"1\) item"),
+        ("    code", "&#32;   code"),
+    ],
+)
+def test_write_paper_note_neutralizes_abstract_block_markers(
+    tmp_path, abstract, expected
+):
+    target = write_paper_note(
+        tmp_path / "Vault",
+        paper(abstract=abstract),
+        created=date(2026, 8, 21),
+    )
+
+    content = target.read_text(encoding="utf-8")
+    rendered = content.split("## Abstract\n\n", 1)[1].split(
+        "\n\n## Reading Notes", 1
+    )[0]
+    assert rendered == expected
+    assert abstract.strip() in rendered.replace("\\", "").replace("&#32;", " ")
+
+
 def test_paper_note_path_canonicalizes_id_or_url(tmp_path):
     vault = tmp_path / "Vault"
 

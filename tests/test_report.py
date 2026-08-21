@@ -24,6 +24,25 @@ def test_escape_markdown_text_is_public_and_context_safe():
     )
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("# Injected", r"\# Injected"),
+        ("> quoted", r"\> quoted"),
+        ("---", r"\---"),
+        ("- item", r"\- item"),
+        ("+ item", r"\+ item"),
+        ("1. item", r"1\. item"),
+        ("1) item", r"1\) item"),
+        ("    code", "&#32;   code"),
+    ],
+)
+def test_escape_markdown_block_neutralizes_first_line_markers(value, expected):
+    from paperflow.report import escape_markdown_block
+
+    assert escape_markdown_block(value) == expected
+
+
 def ranked_paper(
     arxiv_id: str = "2608.12345",
     *,
