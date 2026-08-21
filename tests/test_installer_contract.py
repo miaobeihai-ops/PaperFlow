@@ -1861,6 +1861,76 @@ def test_readme_documents_executable_flow_in_required_order():
     assert "绝对永久免费" in text
 
 
+def test_readme_documents_data_root_install_layout_and_scoped_environment():
+    text = _read("README.md")
+    existing_vault = "C:" + r"\Users\you\Documents\Obsidian\ResearchVault"
+
+    assert (
+        '.\\scripts\\install-windows.ps1 -CheckOnly -DataRoot "D:\\PaperFlowData" '
+        f'-VaultPath "{existing_vault}"'
+    ) in text
+    assert (
+        '.\\scripts\\install-windows.ps1 -DataRoot "D:\\PaperFlowData" '
+        f'-VaultPath "{existing_vault}"'
+    ) in text
+    for path in (
+        r"D:\PaperFlow\.venv",
+        r"D:\PaperFlowData\bin\paperflow.cmd",
+        r"D:\PaperFlowData\config\config.toml",
+        r"D:\PaperFlowData\cache",
+        r"D:\PaperFlowData\tmp",
+        r"%USERPROFILE%\.agents\skills\paperflow",
+    ):
+        assert path in text
+    assert "PAPERFLOW_HOME" in text
+    assert "PaperFlow 专用" in text
+    assert "不会全局迁移其他程序" in text
+    assert "PIP_NO_CACHE_DIR=1" in text
+    assert "恢复安装进程原有的 TEMP、TMP 和 PIP_NO_CACHE_DIR" in text
+
+
+def test_readme_documents_existing_vault_and_safe_legacy_migration():
+    text = _read("README.md")
+
+    assert ("C:" + r"\Users\you\Documents\Obsidian\ResearchVault") in text
+    assert "也可以提供另一个已存在的 Vault" in text
+    assert "Vault 是用户内容" in text
+    assert "不会作为缓存移动" in text
+    assert "逐字节复制" in text
+    assert "doctor" in text
+    assert "PATH 写入后读回核对" in text
+    assert "只清理旧位置中精确匹配的 wrapper 和 config.toml" in text
+    assert r"%LOCALAPPDATA%\PaperFlow\bin\paperflow.cmd" in text
+    assert r"%APPDATA%\PaperFlow\config.toml" in text
+    assert "拒绝 PATH 迁移" in text
+    assert "失败" in text
+    assert "保留旧位置的已知文件" in text
+    assert "未知相邻文件" in text
+
+
+def test_readme_documents_upgrade_uninstall_privacy_and_usage_contracts():
+    text = _read("README.md")
+    existing_vault = "C:" + r"\Users\you\Documents\Obsidian\ResearchVault"
+
+    assert (
+        '.\\scripts\\install-windows.ps1 -DataRoot "D:\\PaperFlowData" '
+        f'-VaultPath "{existing_vault}"'
+    ) in text
+    assert "不要递归删除 Vault" in text
+    assert "不要递归删除未知的旧版内容" in text
+    assert "不使用 SQLite 或其他数据库" in text
+    assert "元数据和报告文件都保留在本地" in text
+    assert "论文提供方" in text
+    assert "模型端点" in text
+    for command in (
+        "paperflow doctor",
+        'paperflow search "3d reconstruction"',
+        "paperflow daily",
+    ):
+        assert command in text
+    assert r"<Vault>\PaperFlow\Reports\YYYY-MM-DD.md" in text
+
+
 def test_readme_has_three_secret_names_and_valid_compact_cloud_json():
     text = _read("README.md")
     for name in (
