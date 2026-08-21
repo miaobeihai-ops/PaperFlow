@@ -49,6 +49,19 @@ def test_default_local_config_path_rejects_invalid_paperflow_home(
     assert str(exc_info.value) == "PAPERFLOW_HOME must be an absolute path"
 
 
+def test_default_local_config_path_rejects_paperflow_home_that_is_a_file(
+    monkeypatch, tmp_path
+):
+    paperflow_home = tmp_path / "paperflow-home"
+    paperflow_home.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("PAPERFLOW_HOME", str(paperflow_home))
+
+    with pytest.raises(ConfigError) as exc_info:
+        default_local_config_path()
+
+    assert str(exc_info.value) == "PAPERFLOW_HOME must be an absolute path"
+
+
 def test_load_local_config(tmp_path):
     vault_path = tmp_path / "Vault"
     vault_path.mkdir()

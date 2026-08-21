@@ -32,6 +32,7 @@ def default_local_config_path() -> Path:
             or "\n" in raw_home
             or "\r" in raw_home
             or not home.is_absolute()
+            or (home.exists() and not home.is_dir())
         ):
             raise ConfigError("PAPERFLOW_HOME must be an absolute path")
         return home / "config" / "config.toml"
