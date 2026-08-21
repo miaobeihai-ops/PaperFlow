@@ -169,17 +169,6 @@ def _run_isolated(
     )
 
 
-def _enable_user_path_file(
-    setup: dict[str, object], initial_value: str
-) -> Path:
-    path_file = Path(setup["project"]).parent / "user-path.txt"
-    path_file.write_text(initial_value, encoding="utf-8")
-    env = dict(setup["env"])
-    env["PAPERFLOW_INSTALLER_TEST_USER_PATH_FILE"] = str(path_file)
-    setup["env"] = env
-    return path_file
-
-
 def _run_isolated_without_registry_path_change(
     setup: dict[str, object], *arguments: str, input_text: str
 ) -> subprocess.CompletedProcess[str]:
@@ -187,6 +176,63 @@ def _run_isolated_without_registry_path_change(
     result = _run_isolated(setup, *arguments, input_text=input_text)
     assert _user_path_from_registry() == registry_path_before
     return result
+
+
+def _powershell_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _run_dot_sourced_with_process_path(
+    setup: dict[str, object],
+    initial_path: str,
+    *arguments: str,
+    runs: int = 1,
+    input_text: str = "y\n",
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    env = dict(setup["env"])
+    env["PAPERFLOW_INSTALLER_TEST_USER_PATH_VALUE"] = initial_path
+    command_arguments = " ".join(
+        argument if argument.startswith("-") else _powershell_literal(argument)
+        for argument in arguments
+    )
+    invocation = ". {0} {1}".format(
+        _powershell_literal(str(setup["installer"])),
+        command_arguments,
+    ).rstrip()
+    marker = "__PAPERFLOW_TEST_USER_PATH__"
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        + "; ".join(invocation for _ in range(runs))
+        + "; [Console]::Out.WriteLine("
+        + _powershell_literal(marker)
+        + " + $env:PAPERFLOW_INSTALLER_TEST_USER_PATH_VALUE)"
+    )
+    registry_path_before = _user_path_from_registry()
+    result = subprocess.run(
+        [
+            str(setup["powershell"]),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        cwd=Path(setup["project"]),
+        env=env,
+        input=input_text,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+    assert _user_path_from_registry() == registry_path_before
+    marker_lines = [
+        line for line in result.stdout.splitlines() if line.startswith(marker)
+    ]
+    assert len(marker_lines) == 1, result.stdout + result.stderr
+    return result, marker_lines[0][len(marker) :]
 
 
 def test_installer_declares_safe_preview_first_interface():
@@ -228,14 +274,19 @@ def test_installer_refreshes_process_path_before_rechecking_installs():
     assert "SetEnvironmentVariable('Path'" not in install_branch[:refresh_position]
 
 
-def test_user_path_backend_has_explicit_file_seam_and_production_fallback():
+def test_user_path_backend_has_process_value_seam_and_production_fallback():
     text = INSTALLER.read_text(encoding="utf-8")
 
     assert "function Get-PaperFlowUserPath" in text
     assert "function Set-PaperFlowUserPath" in text
-    assert "PAPERFLOW_INSTALLER_TEST_USER_PATH_FILE" in text
+    assert "PAPERFLOW_INSTALLER_TEST_USER_PATH_VALUE" in text
+    assert "PAPERFLOW_INSTALLER_TEST_USER_PATH_FILE" not in text
+    assert "GetEnvironmentVariables('Process')" in text
+    assert "$processEnvironment.Contains($variableName)" in text
+    assert "WriteAllText" not in text[text.index("function Set-PaperFlowUserPath") : text.index("function Invoke-SelectedPython")]
     assert "[Environment]::GetEnvironmentVariable('Path', 'User')" in text
     assert "[Environment]::SetEnvironmentVariable('Path', $Value, 'User')" in text
+    assert "$env:PAPERFLOW_INSTALLER_TEST_USER_PATH_VALUE = $Value" in text
     path_flow = text[text.index("$userPath = Get-PaperFlowUserPath") :]
     should_process = path_flow.index("$PSCmdlet.ShouldProcess('User PATH'")
     write_call = path_flow.index("Set-PaperFlowUserPath -Value $newUserPath")
@@ -436,42 +487,50 @@ def test_formal_install_writes_expected_files_cleans_skill_and_is_idempotent(tmp
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
-def test_path_consent_appends_bin_with_file_backend_and_not_registry(tmp_path):
+def test_path_consent_appends_bin_in_process_and_not_registry(tmp_path):
     setup = _isolated_installer(
         tmp_path, ("git", "codex", "zotero", "obsidian")
     )
-    path_file = _enable_user_path_file(setup, "initial")
     bin_dir = Path(setup["local_appdata"]) / "PaperFlow" / "bin"
 
-    result = _run_isolated_without_registry_path_change(
+    result, process_path = _run_dot_sourced_with_process_path(
         setup,
+        "initial",
         "-VaultPath",
         str(setup["vault"]),
-        input_text="y\n",
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert path_file.read_text(encoding="utf-8") == f"initial;{bin_dir}"
+    assert process_path == f"initial;{bin_dir}"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
-def test_second_path_consent_run_does_not_duplicate_bin(tmp_path):
+def test_path_consent_accepts_empty_process_path(tmp_path):
     setup = _isolated_installer(
         tmp_path, ("git", "codex", "zotero", "obsidian")
     )
-    path_file = _enable_user_path_file(setup, "initial")
     bin_dir = Path(setup["local_appdata"]) / "PaperFlow" / "bin"
 
-    first = _run_isolated_without_registry_path_change(
-        setup, input_text="y\n"
+    result, process_path = _run_dot_sourced_with_process_path(setup, "")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert process_path == str(bin_dir)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_two_path_consent_runs_in_one_process_do_not_duplicate_bin(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
     )
-    second = _run_isolated_without_registry_path_change(
-        setup, input_text="y\n"
+    bin_dir = Path(setup["local_appdata"]) / "PaperFlow" / "bin"
+
+    result, process_path = _run_dot_sourced_with_process_path(
+        setup, "initial", runs=2
     )
 
-    assert first.returncode == 0, first.stdout + first.stderr
-    assert second.returncode == 0, second.stdout + second.stderr
-    assert path_file.read_text(encoding="utf-8") == f"initial;{bin_dir}"
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert process_path == f"initial;{bin_dir}"
+    assert process_path.casefold().split(";").count(str(bin_dir).casefold()) == 1
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
@@ -481,81 +540,33 @@ def test_existing_path_case_variant_with_trailing_slash_is_not_appended(tmp_path
     )
     bin_dir = Path(setup["local_appdata"]) / "PaperFlow" / "bin"
     initial_path = f"initial;{str(bin_dir).swapcase()}\\"
-    path_file = _enable_user_path_file(setup, initial_path)
 
-    result = _run_isolated_without_registry_path_change(
-        setup, input_text="y\n"
+    result, process_path = _run_dot_sourced_with_process_path(
+        setup, initial_path
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert path_file.read_text(encoding="utf-8") == initial_path
+    assert process_path == initial_path
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
-def test_whatif_path_consent_y_changes_neither_file_tree_nor_registry(tmp_path):
+def test_whatif_path_consent_changes_neither_process_path_tree_nor_registry(tmp_path):
     setup = _isolated_installer(
         tmp_path, ("git", "codex", "zotero", "obsidian")
     )
-    path_file = _enable_user_path_file(setup, "initial")
     before = _snapshot(tmp_path)
 
-    result = _run_isolated_without_registry_path_change(
+    result, process_path = _run_dot_sourced_with_process_path(
         setup,
+        "initial",
         "-WhatIf",
         "-VaultPath",
         str(setup["vault"]),
-        input_text="y\n",
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "What if:" in result.stdout
-    assert path_file.read_text(encoding="utf-8") == "initial"
-    assert _snapshot(tmp_path) == before
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
-def test_directory_path_backend_fails_safely_under_whatif(tmp_path):
-    setup = _isolated_installer(
-        tmp_path, ("git", "codex", "zotero", "obsidian")
-    )
-    env = dict(setup["env"])
-    env["PAPERFLOW_INSTALLER_TEST_USER_PATH_FILE"] = str(setup["appdata"])
-    setup["env"] = env
-    before = _snapshot(tmp_path)
-
-    result = _run_isolated_without_registry_path_change(
-        setup,
-        "-WhatIf",
-        "-VaultPath",
-        str(setup["vault"]),
-        input_text="y\n",
-    )
-
-    assert result.returncode != 0
-    assert "must be an existing file" in result.stderr
-    assert _snapshot(tmp_path) == before
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
-def test_empty_path_backend_fails_safely_under_whatif(tmp_path):
-    setup = _isolated_installer(
-        tmp_path, ("git", "codex", "zotero", "obsidian")
-    )
-    env = dict(setup["env"])
-    env["PAPERFLOW_INSTALLER_TEST_USER_PATH_FILE"] = ""
-    setup["env"] = env
-    before = _snapshot(tmp_path)
-
-    result = _run_isolated_without_registry_path_change(
-        setup,
-        "-WhatIf",
-        "-VaultPath",
-        str(setup["vault"]),
-        input_text="y\n",
-    )
-
-    assert result.returncode != 0
-    assert "cannot be empty" in result.stderr
+    assert process_path == "initial"
     assert _snapshot(tmp_path) == before
 
 
