@@ -150,6 +150,49 @@ function Refresh-ProcessPath {
     $env:Path = @($env:Path, $machinePath, $userPath) -join ';'
 }
 
+function Get-PaperFlowTestUserPathFile {
+    $variableName = 'PAPERFLOW_INSTALLER_TEST_USER_PATH_FILE'
+    $processEnvironment = [Environment]::GetEnvironmentVariables('Process')
+    if (-not $processEnvironment.Contains($variableName)) {
+        return $null
+    }
+    $rawPath = [string]$processEnvironment[$variableName]
+    if ([string]::IsNullOrWhiteSpace($rawPath)) {
+        throw 'PAPERFLOW_INSTALLER_TEST_USER_PATH_FILE cannot be empty.'
+    }
+    if (-not [System.IO.Path]::IsPathRooted($rawPath)) {
+        throw 'PAPERFLOW_INSTALLER_TEST_USER_PATH_FILE must be absolute.'
+    }
+    $fullPath = [System.IO.Path]::GetFullPath($rawPath)
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw 'PAPERFLOW_INSTALLER_TEST_USER_PATH_FILE must be an existing file.'
+    }
+    return $fullPath
+}
+
+function Get-PaperFlowUserPath {
+    $testPathFile = Get-PaperFlowTestUserPathFile
+    if ($null -ne $testPathFile) {
+        return [System.IO.File]::ReadAllText($testPathFile)
+    }
+    return [Environment]::GetEnvironmentVariable('Path', 'User')
+}
+
+function Set-PaperFlowUserPath {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    $testPathFile = Get-PaperFlowTestUserPathFile
+    if ($null -ne $testPathFile) {
+        [System.IO.File]::WriteAllText(
+            $testPathFile,
+            $Value,
+            (New-Object System.Text.UTF8Encoding($false))
+        )
+        return
+    }
+    [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
+}
+
 function Invoke-SelectedPython {
     param([string[]]$Arguments)
     & $script:PythonCommand @script:PythonPrefixArguments @Arguments
@@ -275,7 +318,7 @@ else {
     Write-Warning 'No VaultPath was provided; local config.toml was not written.'
 }
 
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$userPath = Get-PaperFlowUserPath
 $pathEntries = @($userPath -split ';' | Where-Object { $_ })
 $binAlreadyPresent = $false
 foreach ($entry in $pathEntries) {
@@ -289,7 +332,7 @@ if (-not $binAlreadyPresent) {
     if ($answer -match '^(?i:y|yes)$') {
         if ($PSCmdlet.ShouldProcess('User PATH', "Add $BinDir")) {
             $newUserPath = if ([string]::IsNullOrWhiteSpace($userPath)) { $BinDir } else { "$userPath;$BinDir" }
-            [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
+            Set-PaperFlowUserPath -Value $newUserPath
             Write-Host 'User PATH updated. Open a new terminal before running paperflow.'
         }
     }
