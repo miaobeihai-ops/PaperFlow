@@ -30,32 +30,78 @@ def default_local_config_path() -> Path:
     return Path(appdata) / "PaperFlow" / "config.toml"
 
 
-def _build(data: dict[str, Any], *, require_vault: bool) -> PaperFlowConfig:
-    keywords = data.get("keywords")
-    if not isinstance(keywords, dict) or not keywords:
+def _validate_keywords(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict) or not value:
         raise ConfigError("keywords must be a non-empty table/object")
-    normalized_keywords = {str(key).casefold(): int(value) for key, value in keywords.items()}
-    top_n = int(data.get("top_n", 10))
+    if not all(isinstance(key, str) for key in value):
+        raise ConfigError("keyword names must be strings")
+    if not all(type(weight) is int for weight in value.values()):
+        raise ConfigError("keyword weights must be integers")
+    return {key.casefold(): weight for key, weight in value.items()}
+
+
+def _validate_integer(value: Any, field: str) -> int:
+    if type(value) is not int:
+        raise ConfigError(f"{field} must be an integer")
+    return value
+
+
+def _validate_non_empty_string(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ConfigError(f"{field} must be a non-empty string")
+    return value
+
+
+def _validate_categories(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(
+        isinstance(category, str) and category for category in value
+    ):
+        raise ConfigError("arxiv_categories must be a list of non-empty strings")
+    return tuple(value)
+
+
+def _build(data: dict[str, Any], *, require_vault: bool) -> PaperFlowConfig:
+    keywords = _validate_keywords(data.get("keywords"))
+    top_n = _validate_integer(data.get("top_n", 10), "top_n")
     if not 1 <= top_n <= 50:
         raise ConfigError("top_n must be between 1 and 50")
-    vault_raw = data.get("vault_path")
-    if require_vault and not vault_raw:
+    history_reports = _validate_integer(data.get("history_reports", 30), "history_reports")
+    arxiv_categories = _validate_categories(data.get("arxiv_categories", ["cs.AI"]))
+    timezone = _validate_non_empty_string(data.get("timezone", "Asia/Hong_Kong"), "timezone")
+
+    if require_vault and "vault_path" not in data:
         raise ConfigError("vault_path is required for local configuration")
+    vault_raw = (
+        _validate_non_empty_string(data["vault_path"], "vault_path")
+        if "vault_path" in data
+        else None
+    )
+    mail_to = (
+        _validate_non_empty_string(data["mail_to"], "mail_to") if "mail_to" in data else None
+    )
+    vault_path = Path(vault_raw).expanduser() if vault_raw else None
+    if require_vault and vault_path is not None and not vault_path.is_absolute():
+        raise ConfigError("vault_path must be absolute")
+
     return PaperFlowConfig(
-        keywords=normalized_keywords,
-        arxiv_categories=tuple(str(value) for value in data.get("arxiv_categories", ["cs.AI"])),
-        timezone=str(data.get("timezone", "Asia/Hong_Kong")),
+        keywords=keywords,
+        arxiv_categories=arxiv_categories,
+        timezone=timezone,
         top_n=top_n,
-        history_reports=int(data.get("history_reports", 30)),
-        vault_path=Path(vault_raw).expanduser() if vault_raw else None,
-        mail_to=str(data["mail_to"]) if data.get("mail_to") else None,
+        history_reports=history_reports,
+        vault_path=vault_path,
+        mail_to=mail_to,
     )
 
 
 def load_local_config(path: Path | None = None) -> PaperFlowConfig:
     config_path = path or default_local_config_path()
-    with config_path.open("rb") as handle:
-        return _build(tomllib.load(handle), require_vault=True)
+    try:
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError("local configuration is invalid TOML") from exc
+    return _build(data, require_vault=True)
 
 
 def load_cloud_config(raw_json: str) -> PaperFlowConfig:
@@ -63,4 +109,6 @@ def load_cloud_config(raw_json: str) -> PaperFlowConfig:
         data = json.loads(raw_json)
     except json.JSONDecodeError as exc:
         raise ConfigError("PAPERFLOW_PRIVATE_CONFIG_JSON is invalid JSON") from exc
+    if not isinstance(data, dict):
+        raise ConfigError("cloud configuration must be a JSON object")
     return _build(data, require_vault=False)
