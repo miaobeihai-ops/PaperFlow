@@ -18,6 +18,11 @@ class ArxivPaperNotFound(ValueError):
     pass
 
 
+class ArxivResponseError(ValueError):
+    def __init__(self) -> None:
+        super().__init__("arXiv response was invalid")
+
+
 def _clean(value: object) -> str:
     return " ".join(str(value or "").split())
 
@@ -34,9 +39,9 @@ def parse_arxiv_feed(xml: str) -> list[Paper]:
     try:
         root = ET.fromstring(xml)
     except ET.ParseError as exc:
-        raise ValueError("arXiv response was invalid") from exc
+        raise ArxivResponseError() from exc
     if root.tag != f"{{{ATOM}}}feed":
-        raise ValueError("arXiv payload root must be an Atom feed")
+        raise ArxivResponseError()
 
     for entry in root.findall(f"{{{ATOM}}}entry"):
         try:
@@ -97,6 +102,11 @@ def _validate_max_results(max_results: int) -> None:
         raise ValueError("max_results must be between 1 and 100")
 
 
+def _literal_search_query(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'all:"{escaped}"'
+
+
 def search_arxiv(
     client: httpx.Client,
     query: str,
@@ -108,7 +118,7 @@ def search_arxiv(
     _validate_max_results(max_results)
     encoded = urllib.parse.urlencode(
         {
-            "search_query": f"all:{cleaned}",
+            "search_query": _literal_search_query(cleaned),
             "start": 0,
             "max_results": max_results,
             "sortBy": "relevance",

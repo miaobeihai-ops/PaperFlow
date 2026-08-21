@@ -16,6 +16,14 @@ from paperflow.report import (
 NOW = datetime(2026, 8, 20, 9, 30, tzinfo=timezone.utc)
 
 
+def test_escape_markdown_text_is_public_and_context_safe():
+    from paperflow.report import escape_markdown_text
+
+    assert escape_markdown_text("![[Private]]\n<img>\u0085") == (
+        r"\!\[\[Private\]\]\n\<img\>\u0085"
+    )
+
+
 def ranked_paper(
     arxiv_id: str = "2608.12345",
     *,

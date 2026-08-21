@@ -8,6 +8,7 @@ import pytest
 
 from paperflow.arxiv_source import (
     ArxivPaperNotFound,
+    ArxivResponseError,
     fetch_arxiv,
     fetch_arxiv_by_id,
     parse_arxiv_feed,
@@ -214,7 +215,9 @@ def test_parse_arxiv_does_not_swallow_non_value_errors(monkeypatch):
     ],
 )
 def test_parse_arxiv_rejects_non_atom_feed_root_without_exposing_xml(xml):
-    with pytest.raises(ValueError, match="^arXiv payload root must be an Atom feed$") as exc_info:
+    with pytest.raises(
+        ArxivResponseError, match="^arXiv response was invalid$"
+    ) as exc_info:
         parse_arxiv_feed(xml)
 
     assert "PRIVATE_ARXIV_RESPONSE" not in str(exc_info.value)
@@ -229,7 +232,9 @@ def test_parse_arxiv_accepts_empty_atom_feed():
 def test_parse_arxiv_malformed_xml_raises_sanitized_value_error():
     xml = "<feed>PRIVATE_MALFORMED_XML"
 
-    with pytest.raises(ValueError, match="^arXiv response was invalid$") as exc_info:
+    with pytest.raises(
+        ArxivResponseError, match="^arXiv response was invalid$"
+    ) as exc_info:
         parse_arxiv_feed(xml)
 
     assert "PRIVATE_MALFORMED_XML" not in str(exc_info.value)
@@ -275,19 +280,40 @@ def test_search_arxiv_uses_one_encoded_request_without_parameter_injection():
         )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        papers = search_arxiv(client, "3d reconstruction&max_results=99", max_results=20)
+        papers = search_arxiv(
+            client,
+            '3d "reconstruction" \\ OR AND ANDNOT cat:cs.AI (robot)',
+            max_results=20,
+        )
 
     assert len(calls) == 1
     parsed = urlparse(str(calls[0]))
     assert parsed.netloc == "export.arxiv.org"
     assert parse_qs(parsed.query) == {
-        "search_query": ["all:3d reconstruction&max_results=99"],
+        "search_query": [
+            'all:"3d \\"reconstruction\\" \\\\ OR AND ANDNOT cat:cs.AI (robot)"'
+        ],
         "start": ["0"],
         "max_results": ["20"],
         "sortBy": ["relevance"],
         "sortOrder": ["descending"],
     }
     assert papers[0].arxiv_id == "2608.12345"
+
+
+def test_search_arxiv_wraps_plain_query_as_one_literal_phrase():
+    calls = []
+
+    def handler(request):
+        calls.append(request.url)
+        return httpx.Response(200, text='<feed xmlns="http://www.w3.org/2005/Atom" />')
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        search_arxiv(client, "3d reconstruction")
+
+    assert parse_qs(urlparse(str(calls[0])).query)["search_query"] == [
+        'all:"3d reconstruction"'
+    ]
 
 
 @pytest.mark.parametrize("query", ["", " \t"])

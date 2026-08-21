@@ -64,7 +64,7 @@ def _visible_control(character: str) -> str | None:
     return None
 
 
-def _markdown_text(value: str) -> str:
+def escape_markdown_text(value: str) -> str:
     rendered = []
     for character in value:
         visible = _visible_control(character)
@@ -149,8 +149,8 @@ def render_daily_markdown(
         for failure in failures:
             lines.extend(
                 [
-                    f"- source: {_markdown_text(failure.source)}",
-                    f"  message: {_markdown_text(failure.message)}",
+                    f"- source: {escape_markdown_text(failure.source)}",
+                    f"  message: {escape_markdown_text(failure.message)}",
                 ]
             )
         lines.append("")
@@ -163,18 +163,18 @@ def render_daily_markdown(
         )
         lines.extend(
             [
-                f"## {index}. {_markdown_text(paper.title)}",
+                f"## {index}. {escape_markdown_text(paper.title)}",
                 "",
                 f"- arxiv_id: {_code_span(paper.arxiv_id)}",
-                f"- title: {_markdown_text(paper.title)}",
+                f"- title: {escape_markdown_text(paper.title)}",
                 "- authors: "
-                + ", ".join(_markdown_text(value) for value in paper.authors),
+                + ", ".join(escape_markdown_text(value) for value in paper.authors),
                 f"- sources: {source_values}",
                 f"- score: {ranked.score}",
                 f"- matched: {matched_values}",
                 f"- arXiv: [Abstract]({_link_destination(paper.url)})",
                 f"- PDF: [PDF]({_link_destination(paper.pdf_url)})",
-                f"- abstract: {_markdown_text(_excerpt(paper.abstract))}",
+                f"- abstract: {escape_markdown_text(_excerpt(paper.abstract))}",
                 "",
             ]
         )

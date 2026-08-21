@@ -408,6 +408,33 @@ def test_search_history_only_without_cloud_vault_is_config_error(
     assert json.loads(capsys.readouterr().out)["ok"] is False
 
 
+def test_search_malformed_arxiv_xml_is_typed_and_sanitized(
+    config, monkeypatch, capsys
+):
+    private_xml = '<not-feed xmlns="http://www.w3.org/2005/Atom">PRIVATE_XML</not-feed>'
+    real_client = httpx.Client
+
+    def client_factory():
+        return real_client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, text=private_xml)
+            )
+        )
+
+    monkeypatch.delenv("PAPERFLOW_PRIVATE_CONFIG_JSON", raising=False)
+    monkeypatch.setattr("paperflow.cli.load_local_config", lambda: config)
+    monkeypatch.setattr("paperflow.cli.httpx.Client", client_factory)
+
+    assert main(["search", "robotics", "--json"]) == 3
+
+    output = capsys.readouterr().out
+    assert "PRIVATE_XML" not in output
+    assert json.loads(output) == {
+        "ok": False,
+        "error": "arXiv response was invalid",
+    }
+
+
 @pytest.mark.parametrize(
     "argv",
     [

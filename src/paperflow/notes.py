@@ -8,6 +8,7 @@ import tempfile
 
 from paperflow.models import Paper
 from paperflow.normalize import canonical_arxiv_id
+from paperflow.report import escape_markdown_text
 
 
 class NoteExists(FileExistsError):
@@ -24,8 +25,8 @@ def _yaml(value: object) -> str:
 
 
 def _render_note(paper: Paper, arxiv_id: str, created: date) -> str:
-    title = paper.title.replace("\r\n", "\n").replace("\r", "\n")
-    abstract = paper.abstract.replace("\r\n", "\n").replace("\r", "\n")
+    title = escape_markdown_text(paper.title)
+    abstract = escape_markdown_text(paper.abstract)
     lines = [
         "---",
         f"arxiv_id: {_yaml(arxiv_id)}",
@@ -80,7 +81,13 @@ def write_paper_note(
         with stream:
             stream.write(content)
             stream.flush()
-        os.replace(temporary, target)
+        if force:
+            os.replace(temporary, target)
+        else:
+            try:
+                os.link(temporary, target)
+            except FileExistsError as exc:
+                raise NoteExists("paper note already exists") from exc
     except Exception:
         if descriptor is not None:
             os.close(descriptor)
@@ -90,4 +97,6 @@ def write_paper_note(
         except OSError:
             pass
         raise
+    if temporary is not None:
+        temporary.unlink(missing_ok=True)
     return target

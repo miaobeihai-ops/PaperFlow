@@ -12,6 +12,7 @@ import httpx
 from paperflow import __version__
 from paperflow.arxiv_source import (
     ArxivPaperNotFound,
+    ArxivResponseError,
     fetch_arxiv_by_id,
     search_arxiv,
 )
@@ -186,6 +187,9 @@ def _run_search(args: argparse.Namespace) -> int:
     except ConfigError as exc:
         _print_error(args, str(exc))
         return 2
+    except ArxivResponseError as exc:
+        _print_error(args, str(exc))
+        return 3
     except (httpx.HTTPError, ArxivPaperNotFound):
         _print_error(args, "arXiv request failed")
         return 3
@@ -234,19 +238,17 @@ def _run_note(args: argparse.Namespace) -> int:
     except NoteExists as exc:
         _print_error(args, str(exc))
         return 4
+    except ArxivResponseError as exc:
+        _print_error(args, str(exc))
+        return 3
     except ArxivPaperNotFound as exc:
         _print_error(args, str(exc))
         return 3
     except httpx.HTTPError:
         _print_error(args, "arXiv request failed")
         return 3
-    except ValueError as exc:
-        message = (
-            "arXiv response was invalid"
-            if str(exc) == "arXiv response was invalid"
-            else "paper note could not be created"
-        )
-        _print_error(args, message)
+    except ValueError:
+        _print_error(args, "paper note could not be created")
         return 3
     except OSError:
         _print_error(args, "paper note could not be created")

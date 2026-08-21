@@ -1,4 +1,5 @@
 from datetime import date
+import os
 from pathlib import Path
 
 import pytest
@@ -121,9 +122,31 @@ def test_write_paper_note_creates_safe_utf8_lf_note(tmp_path):
     assert 'authors: ["Ada Researcher", "Bo: Builder"]' in content
     assert 'status: "unread"' in content
     assert 'created: "2026-08-21"' in content
-    assert "Original abstract.\n\nSecond paragraph." in content
+    assert r"Original abstract.\n\nSecond paragraph." in content
     assert "## Reading Notes" in content
     assert "AI summary" not in content
+
+
+def test_write_paper_note_escapes_markdown_syntax_and_controls_in_body(tmp_path):
+    vault = tmp_path / "Vault"
+    target = write_paper_note(
+        vault,
+        paper(
+            title="Unsafe ![[Private]] <img>",
+            abstract="![](tracker)\n<img src=x>\u0085tail",
+        ),
+        created=date(2026, 8, 21),
+    )
+
+    content = target.read_text(encoding="utf-8")
+    body = content.split("---", 2)[2]
+    assert "![[Private]]" not in body
+    assert "![](tracker)" not in body
+    assert "<img>" not in body
+    assert "<img src=x>" not in body
+    assert "\u0085" not in body
+    assert r"\!\[\[Private\]\]" in body
+    assert r"\!\[\]\(tracker\)\n\<img src=x\>\u0085tail" in body
 
 
 def test_paper_note_path_canonicalizes_id_or_url(tmp_path):
@@ -178,6 +201,46 @@ def test_write_paper_note_preserves_old_target_and_cleans_own_temp_on_replace_fa
 
     assert target.read_bytes() == original
     assert {path.name for path in target.parent.iterdir()} == before_names
+
+
+def test_write_paper_note_no_clobber_preserves_competing_target(tmp_path, monkeypatch):
+    vault = tmp_path / "Vault"
+    target = paper_note_path(vault, "2608.12345")
+    real_link = os.link
+
+    def competing_link(source, destination):
+        target.write_text("competitor", encoding="utf-8")
+        return real_link(source, destination)
+
+    monkeypatch.setattr("paperflow.notes.os.link", competing_link)
+
+    with pytest.raises(NoteExists, match="paper note already exists"):
+        write_paper_note(vault, paper(), created=date(2026, 8, 21))
+
+    assert target.read_text(encoding="utf-8") == "competitor"
+    assert [path.name for path in target.parent.iterdir()] == [target.name]
+
+
+def test_write_paper_note_does_not_fallback_when_hard_link_is_unsupported(
+    tmp_path, monkeypatch
+):
+    vault = tmp_path / "Vault"
+    target = paper_note_path(vault, "2608.12345")
+    monkeypatch.setattr(
+        "paperflow.notes.os.link",
+        lambda *_args: (_ for _ in ()).throw(OSError("hard links unsupported")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "paperflow.notes.os.replace",
+        lambda *_args: pytest.fail("no-clobber must not fall back to replace"),
+    )
+
+    with pytest.raises(OSError, match="hard links unsupported"):
+        write_paper_note(vault, paper(), created=date(2026, 8, 21))
+
+    assert not target.exists()
+    assert list(target.parent.iterdir()) == []
 
 
 def test_write_paper_note_rejects_invalid_id_before_creating_directories(tmp_path):
