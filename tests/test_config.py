@@ -114,6 +114,75 @@ def test_resolve_paperflow_home_rejects_tilde_without_injected_home():
         )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
+@pytest.mark.parametrize(
+    "raw_home",
+    ["~//PaperFlow", "~///PaperFlow", r"~\\PaperFlow", r"~\\\\PaperFlow"],
+)
+def test_resolve_paperflow_home_strips_repeated_tilde_separators(raw_home):
+    resolver = _paperflow_home_resolver()
+    injected_home = Path(r"C:\Users\injected")
+
+    resolved = resolver(
+        {"PAPERFLOW_HOME": raw_home, "USERPROFILE": str(injected_home)},
+        path_exists=lambda _path: False,
+        path_is_dir=lambda _path: False,
+    )
+
+    assert resolved == injected_home / "PaperFlow"
+    assert resolved.is_relative_to(injected_home)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows environment semantics")
+def test_resolve_paperflow_home_uses_legacy_home_drive_and_path():
+    resolver = _paperflow_home_resolver()
+
+    resolved = resolver(
+        {
+            "PAPERFLOW_HOME": r"~\PaperFlow",
+            "HOMEDRIVE": "Z:",
+            "HOMEPATH": r"\Users\legacy",
+        },
+        path_exists=lambda _path: False,
+        path_is_dir=lambda _path: False,
+    )
+
+    assert resolved == Path(r"Z:\Users\legacy\PaperFlow")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows environment semantics")
+@pytest.mark.parametrize(
+    "legacy_home",
+    [
+        {"HOMEDRIVE": "Z:"},
+        {"HOMEPATH": r"\Users\legacy"},
+        {"HOMEDRIVE": "Z:", "HOMEPATH": r"Users\legacy"},
+    ],
+)
+def test_resolve_paperflow_home_rejects_incomplete_or_relative_legacy_home(
+    legacy_home,
+):
+    resolver = _paperflow_home_resolver()
+
+    with pytest.raises(ConfigError, match="^PAPERFLOW_HOME must be an absolute path$"):
+        resolver(
+            {"PAPERFLOW_HOME": r"~\PaperFlow", **legacy_home},
+            path_exists=lambda _path: False,
+            path_is_dir=lambda _path: False,
+        )
+
+
+def test_resolve_paperflow_home_rejects_named_user_tilde():
+    resolver = _paperflow_home_resolver()
+
+    with pytest.raises(ConfigError, match="^PAPERFLOW_HOME must be an absolute path$"):
+        resolver(
+            {"PAPERFLOW_HOME": "~another-user/PaperFlow"},
+            path_exists=lambda _path: False,
+            path_is_dir=lambda _path: False,
+        )
+
+
 def test_resolve_paperflow_home_probes_each_path_once(tmp_path):
     resolver = _paperflow_home_resolver()
     home = tmp_path / "PaperFlowHome"

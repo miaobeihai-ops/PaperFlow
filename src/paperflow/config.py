@@ -41,8 +41,13 @@ def resolve_paperflow_home(
     if raw_home == "~" or raw_home.startswith(("~/", "~\\")):
         injected_home = environ.get("USERPROFILE") or environ.get("HOME")
         if not injected_home:
+            home_drive = environ.get("HOMEDRIVE")
+            home_path = environ.get("HOMEPATH")
+            if home_drive and home_path:
+                injected_home = home_drive + home_path
+        if not injected_home:
             raise ConfigError("PAPERFLOW_HOME must be an absolute path")
-        suffix = raw_home[2:] if len(raw_home) > 1 else ""
+        suffix = raw_home[1:].lstrip("/\\")
         home = Path(injected_home) / suffix
     else:
         home = Path(raw_home)
