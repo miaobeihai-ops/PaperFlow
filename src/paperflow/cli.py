@@ -23,7 +23,7 @@ from paperflow.config import (
     load_local_config,
 )
 from paperflow.daily import AllSourcesFailed, run_daily
-from paperflow.email import GmailSettings, send_daily_email
+from paperflow.email import EmailDeliveryError, GmailSettings, send_daily_email
 from paperflow.models import DailyResult, SourceFailure
 from paperflow.normalize import canonical_arxiv_id
 from paperflow.notes import NoteExists, paper_note_path, write_paper_note
@@ -206,7 +206,7 @@ def _run_daily(args: argparse.Namespace) -> int:
                     render_email_html(target_date, [], public_failures),
                 )
                 failure_email_sent = True
-            except Exception:
+            except EmailDeliveryError:
                 pass
         payload = {
             "ok": False,
@@ -238,7 +238,7 @@ def _run_daily(args: argparse.Namespace) -> int:
                 render_email_text(result.date, result.papers, public_failures),
                 render_email_html(result.date, result.papers, public_failures),
             )
-        except Exception:
+        except EmailDeliveryError:
             payload = {
                 "ok": False,
                 "error": "email delivery failed",

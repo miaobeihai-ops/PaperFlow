@@ -11,6 +11,7 @@ import httpx
 from paperflow.config import ConfigError
 from paperflow.cli import _public_failures, _target_date, main
 from paperflow.daily import AllSourcesFailed
+from paperflow.email import EmailDeliveryError
 from paperflow.models import DailyResult, Paper, RankedPaper, SourceFailure
 from paperflow.notes import NoteExists
 
@@ -513,7 +514,7 @@ def test_daily_email_all_sources_failed_smtp_failure_stays_three_and_is_sanitize
     monkeypatch.setattr(
         "paperflow.cli.send_daily_email",
         lambda *_args: (_ for _ in ()).throw(
-            RuntimeError("PRIVATE_PASSWORD https://private.example/token")
+            EmailDeliveryError("email delivery failed")
         ),
     )
 
@@ -537,7 +538,7 @@ def test_daily_email_normal_smtp_failure_returns_five_and_is_sanitized(
     monkeypatch.setattr(
         "paperflow.cli.send_daily_email",
         lambda *_args: (_ for _ in ()).throw(
-            RuntimeError("PRIVATE_PASSWORD https://private.example/token")
+            EmailDeliveryError("email delivery failed")
         ),
     )
 
@@ -551,6 +552,36 @@ def test_daily_email_normal_smtp_failure_returns_five_and_is_sanitized(
         "error": "email delivery failed",
         "email_sent": False,
     }
+
+
+@pytest.mark.parametrize("all_failed", [False, True])
+def test_daily_email_programming_errors_are_not_swallowed(
+    config, monkeypatch, all_failed
+):
+    _email_environment(monkeypatch)
+    cloud = replace(config, vault_path=None, mail_to="reader@example.com")
+    monkeypatch.setattr("paperflow.cli.load_cloud_config", lambda _raw: cloud)
+    if all_failed:
+        failures = (SourceFailure("arxiv", "network error"),)
+        monkeypatch.setattr(
+            "paperflow.cli.run_daily",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AllSourcesFailed(failures)
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            "paperflow.cli.run_daily", lambda *_args, **_kwargs: daily_result()
+        )
+    monkeypatch.setattr(
+        "paperflow.cli.send_daily_email",
+        lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("PRIVATE_PROGRAMMING_SENTINEL")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="PRIVATE_PROGRAMMING_SENTINEL"):
+        main(["--json", "daily", "--email", "--no-write"])
 
 
 def test_public_failures_allowlists_sources_and_safe_message_categories():

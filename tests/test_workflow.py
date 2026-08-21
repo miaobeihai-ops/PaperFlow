@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "daily.yml"
@@ -13,8 +14,15 @@ def test_daily_email_workflow_contract():
     assert "permissions:\n  contents: read" in content
     assert "runs-on: ubuntu-latest" in content
     assert "timeout-minutes: 10" in content
-    assert "uses: actions/checkout@v4" in content
-    assert "uses: actions/setup-python@v5" in content
+    assert (
+        "uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4"
+        in content
+    )
+    assert (
+        "uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5"
+        in content
+    )
+    assert re.search(r"uses:\s+actions/[^@\s]+@v\d+(?:\s|$)", content) is None
     assert 'python-version: "3.11"' in content
     assert "cache: pip" in content
     assert "run: python -m pip install ." in content
