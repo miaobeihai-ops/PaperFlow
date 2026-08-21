@@ -5,7 +5,7 @@ import os
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 
@@ -48,6 +48,9 @@ def resolve_paperflow_home(
         if not injected_home:
             raise ConfigError("PAPERFLOW_HOME must be an absolute path")
         suffix = raw_home[1:].lstrip("/\\")
+        windows_suffix = PureWindowsPath(suffix)
+        if windows_suffix.drive or windows_suffix.root:
+            raise ConfigError("PAPERFLOW_HOME must be an absolute path")
         home = Path(injected_home) / suffix
     else:
         home = Path(raw_home)

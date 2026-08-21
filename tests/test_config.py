@@ -133,6 +133,46 @@ def test_resolve_paperflow_home_strips_repeated_tilde_separators(raw_home):
     assert resolved.is_relative_to(injected_home)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
+@pytest.mark.parametrize(
+    "raw_home",
+    [r"~/C:\PaperFlow", r"~\D:\PaperFlow"],
+)
+def test_resolve_paperflow_home_rejects_drive_qualified_tilde_suffix(raw_home):
+    resolver = _paperflow_home_resolver()
+
+    with pytest.raises(ConfigError, match="^PAPERFLOW_HOME must be an absolute path$"):
+        resolver(
+            {
+                "PAPERFLOW_HOME": raw_home,
+                "USERPROFILE": r"Z:\Users\injected",
+            },
+            path_exists=lambda _path: False,
+            path_is_dir=lambda _path: False,
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
+@pytest.mark.parametrize(
+    ("raw_home", "relative_suffix"),
+    [
+        ("~/nested/PaperFlow", Path("nested/PaperFlow")),
+        (r"~\nested\PaperFlow", Path(r"nested\PaperFlow")),
+    ],
+)
+def test_resolve_paperflow_home_accepts_standard_relative_tilde_suffixes(
+    raw_home, relative_suffix
+):
+    resolver = _paperflow_home_resolver()
+    injected_home = Path(r"Z:\Users\injected")
+
+    assert resolver(
+        {"PAPERFLOW_HOME": raw_home, "USERPROFILE": str(injected_home)},
+        path_exists=lambda _path: False,
+        path_is_dir=lambda _path: False,
+    ) == injected_home / relative_suffix
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows environment semantics")
 def test_resolve_paperflow_home_uses_legacy_home_drive_and_path():
     resolver = _paperflow_home_resolver()
