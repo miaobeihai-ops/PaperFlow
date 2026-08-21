@@ -59,7 +59,9 @@ function Set-PaperFlowPathEntry {
             continue
         }
         $normalizedEntry = & $normalize $rawEntry
-        if ($normalizedLegacy -and $normalizedEntry -ieq $normalizedLegacy) {
+        if ($normalizedLegacy -and
+            $normalizedLegacy -ine $normalizedNew -and
+            $normalizedEntry -ieq $normalizedLegacy) {
             $changed = $true
             continue
         }

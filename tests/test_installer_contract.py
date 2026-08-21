@@ -398,6 +398,19 @@ def test_set_path_entry_is_case_insensitive_and_idempotent():
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_set_path_entry_preserves_existing_entry_when_new_and_legacy_match():
+    current_path = r"d:\paperflowdata\BIN\\"
+
+    result = _invoke_set_path_function(
+        current_path,
+        r"D:\PaperFlowData\bin",
+        r"D:\PAPERFLOWDATA\bin\\",
+    )
+
+    assert result == {"Changed": False, "Value": current_path}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
 @pytest.mark.parametrize(
     ("current_path", "bin_dir", "legacy_bin_dir", "expected"),
     [
@@ -407,12 +420,6 @@ def test_set_path_entry_is_case_insensitive_and_idempotent():
             r"D:\PaperFlowData\bin",
             "",
             r" C:\Tools ;C:\Other;D:\PaperFlowData\bin",
-        ),
-        (
-            r"d:\paperflowdata\bin\\;C:\Other",
-            r"D:\PaperFlowData\bin",
-            r"D:\PaperFlowData\bin",
-            r"C:\Other;D:\PaperFlowData\bin",
         ),
         (
             r"C:\Legacy\bin;C:\Other;c:\legacy\BIN\\",
