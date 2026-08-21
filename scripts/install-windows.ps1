@@ -180,48 +180,30 @@ function Resolve-PaperFlowConfigVaultPath {
     if ([string]::IsNullOrWhiteSpace($script:PythonCommand)) {
         throw 'Python 3.11 or newer is required to validate the effective PaperFlow config.'
     }
-    $pythonPathWasPresent = Test-Path Env:PYTHONPATH
-    $originalPythonPath = $env:PYTHONPATH
+    $sourcePath = Join-Path $ProjectRoot 'src'
+    $pythonCode = 'from pathlib import Path; import sys; sys.path.insert(0, sys.argv[2]); from paperflow.config import load_local_config; print(load_local_config(Path(sys.argv[1])).vault_path)'
+    $originalErrorActionPreference = $ErrorActionPreference
     try {
-        $sourcePath = Join-Path $ProjectRoot 'src'
-        $env:PYTHONPATH = if ($pythonPathWasPresent -and -not [string]::IsNullOrEmpty($originalPythonPath)) {
-            $sourcePath + [System.IO.Path]::PathSeparator + $originalPythonPath
-        }
-        else {
-            $sourcePath
-        }
-        $pythonCode = 'from pathlib import Path; import sys; from paperflow.config import load_local_config; print(load_local_config(Path(sys.argv[1])).vault_path)'
-        $originalErrorActionPreference = $ErrorActionPreference
-        try {
-            $ErrorActionPreference = 'Continue'
-            $output = @(& $script:PythonCommand @script:PythonPrefixArguments -c $pythonCode $Path 2>&1)
-            $exitCode = $LASTEXITCODE
-        }
-        finally {
-            $ErrorActionPreference = $originalErrorActionPreference
-        }
-        if ($exitCode -ne 0) {
-            $detail = ($output | Out-String).Trim()
-            throw "Effective PaperFlow config is invalid: $Path. $detail"
-        }
-        $vaultPath = [string]($output | Select-Object -Last 1)
-        if ([string]::IsNullOrWhiteSpace($vaultPath)) {
-            throw "Effective PaperFlow config is invalid: $Path. vault_path was not resolved."
-        }
-        try {
-            return [System.IO.Path]::GetFullPath($vaultPath)
-        }
-        catch {
-            throw "Effective PaperFlow config is invalid: $Path. vault_path is not valid: $($_.Exception.Message)"
-        }
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $script:PythonCommand @script:PythonPrefixArguments -c $pythonCode $Path $sourcePath 2>&1)
+        $exitCode = $LASTEXITCODE
     }
     finally {
-        if ($pythonPathWasPresent) {
-            $env:PYTHONPATH = $originalPythonPath
-        }
-        else {
-            [Environment]::SetEnvironmentVariable('PYTHONPATH', $null, 'Process')
-        }
+        $ErrorActionPreference = $originalErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        $detail = ($output | Out-String).Trim()
+        throw "Effective PaperFlow config is invalid: $Path. $detail"
+    }
+    $vaultPath = [string]($output | Select-Object -Last 1)
+    if ([string]::IsNullOrWhiteSpace($vaultPath)) {
+        throw "Effective PaperFlow config is invalid: $Path. vault_path was not resolved."
+    }
+    try {
+        return [System.IO.Path]::GetFullPath($vaultPath)
+    }
+    catch {
+        throw "Effective PaperFlow config is invalid: $Path. vault_path is not valid: $($_.Exception.Message)"
     }
 }
 
@@ -312,6 +294,23 @@ function Refresh-ProcessPath {
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = Get-PaperFlowUserPath
     $env:Path = @($env:Path, $machinePath, $userPath) -join ';'
+}
+
+function Set-EffectiveConfigPreviewState {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('destination', 'legacy', 'explicit', 'none')]
+        [string]$Source
+    )
+
+    $State.Vault = $Source -ne 'none'
+    $State.VaultStatus = switch ($Source) {
+        'destination' { 'destination config will be preserved' }
+        'legacy' { 'legacy config will be migrated' }
+        'explicit' { 'explicit Vault will generate config' }
+        default { 'no effective config; config will not be written' }
+    }
 }
 
 function Get-PaperFlowUserPath {
@@ -695,14 +694,17 @@ $state = Get-InstallationState
 
 if ($DataRootSupplied) {
     $effectiveConfigPath = $null
+    $effectiveConfigSource = 'none'
     Assert-RegularFileOrMissing -Path $ConfigPath -Name 'PaperFlow config'
     if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
         $effectiveConfigPath = $ConfigPath
+        $effectiveConfigSource = 'destination'
     }
     else {
         Assert-LegacyPaperFlowDirectorySafety
         if (Test-RegularNonReparseFile -Path $LegacyConfigPath) {
             $effectiveConfigPath = $LegacyConfigPath
+            $effectiveConfigSource = 'legacy'
         }
     }
 
@@ -715,12 +717,14 @@ if ($DataRootSupplied) {
             throw 'VaultPath must be an existing directory.'
         }
         $effectiveVaultPath = (Resolve-Path -LiteralPath $VaultPath).Path
+        $effectiveConfigSource = 'explicit'
     }
 
     if ($null -ne $effectiveVaultPath -and
         (Test-PathsOverlap -First $ResolvedDataRoot -Second $effectiveVaultPath)) {
         throw "DataRoot must not overlap effective Vault: $effectiveVaultPath"
     }
+    Set-EffectiveConfigPreviewState -State $state -Source $effectiveConfigSource
 }
 
 Write-Host 'PaperFlow installation preview'
@@ -754,6 +758,9 @@ if ($InstallMissing) {
     }
     Refresh-ProcessPath
     $state = Get-InstallationState
+    if ($DataRootSupplied) {
+        Set-EffectiveConfigPreviewState -State $state -Source $effectiveConfigSource
+    }
     Write-Host 'Checks after requested installations'
     Show-InstallationState -State $state
 }

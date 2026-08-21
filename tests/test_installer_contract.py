@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -887,6 +888,41 @@ def test_existing_config_vault_takes_precedence_over_missing_explicit_vault(tmp_
     assert (data_root / "bin" / "paperflow.cmd").is_file()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize(
+    ("config_source", "expected_detail"),
+    [
+        ("destination", "destination config will be preserved"),
+        ("legacy", "legacy config will be migrated"),
+        ("explicit", "explicit Vault will generate config"),
+        ("none", "no effective config; config will not be written"),
+    ],
+)
+def test_check_only_previews_effective_config_source(
+    tmp_path, config_source, expected_detail
+):
+    setup = _isolated_installer(tmp_path, ("git", "codex"))
+    data_root = tmp_path / "PaperFlow Data"
+    arguments = ["-CheckOnly", "-DataRoot", str(data_root)]
+    if config_source == "destination":
+        config_path = data_root / "config" / "config.toml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_bytes(_local_config_bytes(Path(setup["vault"])))
+    elif config_source == "legacy":
+        config_path = Path(setup["appdata"]) / "PaperFlow" / "config.toml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_bytes(_local_config_bytes(Path(setup["vault"])))
+    elif config_source == "explicit":
+        arguments.extend(("-VaultPath", str(setup["vault"])))
+
+    result = _run_isolated(setup, *arguments, input_text=None)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert expected_detail in result.stdout
+    if config_source != "none":
+        assert "not provided; config will not be written" not in result.stdout
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction behavior test")
 @pytest.mark.parametrize("mode", ["check-only", "formal"])
 def test_data_root_reparse_ancestor_is_rejected_before_mutation(tmp_path, mode):
@@ -945,7 +981,7 @@ def test_installer_uses_only_allowlisted_exact_winget_packages():
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell structure test")
-def test_effective_config_preflight_uses_real_loader_without_temp_file():
+def test_effective_config_preflight_uses_child_sys_path_without_parent_env_write():
     text = INSTALLER.read_text(encoding="utf-8")
     start, end = _powershell_function_extent(
         INSTALLER, "Resolve-PaperFlowConfigVaultPath"
@@ -953,12 +989,77 @@ def test_effective_config_preflight_uses_real_loader_without_temp_file():
     function = text[start:end]
 
     assert "from paperflow.config import load_local_config" in function
+    assert "sys.path.insert(0, sys.argv[2])" in function
     assert "load_local_config(Path(sys.argv[1]))" in function
-    assert "$env:PYTHONPATH" in function
-    assert "finally" in function
-    assert "SetEnvironmentVariable('PYTHONPATH', $null, 'Process')" in function
+    assert "$Path $sourcePath" in function
+    assert "$env:PYTHONPATH =" not in function
+    assert "SetEnvironmentVariable('PYTHONPATH'" not in function
     assert "New-TemporaryFile" not in function
     assert "WriteAllText" not in function
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize("parent_state", ["absent", "present-empty", "non-empty"])
+def test_effective_config_parse_preserves_exact_parent_pythonpath(
+    tmp_path, parent_state
+):
+    setup = _isolated_installer(tmp_path, ("git", "codex"))
+    data_root = tmp_path / "PaperFlow Data"
+    config_path = data_root / "config" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_bytes(_local_config_bytes(Path(setup["vault"])))
+    native_definition = (
+        "using System.Runtime.InteropServices; "
+        "public static class PaperFlowEnvProbe { "
+        '[DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] '
+        "public static extern bool SetEnvironmentVariable(string name, string value); }"
+    )
+    if parent_state == "absent":
+        prologue = (
+            "[Environment]::SetEnvironmentVariable('PYTHONPATH', $null, 'Process'); "
+            "if ([Environment]::GetEnvironmentVariables('Process').Contains('PYTHONPATH')) "
+            "{ throw 'failed to establish absent PYTHONPATH' }; "
+        )
+        expected_present = "False"
+        expected_value = ""
+    elif parent_state == "present-empty":
+        prologue = (
+            f"Add-Type -TypeDefinition {_powershell_literal(native_definition)}; "
+            "[PaperFlowEnvProbe]::SetEnvironmentVariable('PYTHONPATH', '') | Out-Null; "
+            "if (-not [Environment]::GetEnvironmentVariables('Process').Contains('PYTHONPATH')) "
+            "{ throw 'failed to establish present-empty PYTHONPATH' }; "
+        )
+        expected_present = "True"
+        expected_value = ""
+    else:
+        expected_value = "parent-python-path-value"
+        prologue = (
+            f"[Environment]::SetEnvironmentVariable('PYTHONPATH', {_powershell_literal(expected_value)}, 'Process'); "
+            "if (-not [Environment]::GetEnvironmentVariables('Process').Contains('PYTHONPATH')) "
+            "{ throw 'failed to establish non-empty PYTHONPATH' }; "
+        )
+        expected_present = "True"
+    epilogue = (
+        "; $paperflowParentEnv = [Environment]::GetEnvironmentVariables('Process'); "
+        "$paperflowParentPresent = $paperflowParentEnv.Contains('PYTHONPATH'); "
+        "$paperflowParentValue = [Environment]::GetEnvironmentVariable('PYTHONPATH', 'Process'); "
+        "Write-Output ('PARENT_PYTHONPATH=' + $paperflowParentPresent + ':' + "
+        "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$paperflowParentValue)))"
+    )
+
+    result = _run_dot_sourced_installer(
+        setup,
+        "-WhatIf",
+        "-DataRoot",
+        str(data_root),
+        prologue=prologue,
+        epilogue=epilogue,
+        input_text=None,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    encoded_value = base64.b64encode(expected_value.encode("utf-8")).decode("ascii")
+    assert f"PARENT_PYTHONPATH={expected_present}:{encoded_value}" in result.stdout
 
 
 def test_installer_refreshes_process_path_before_rechecking_installs():
