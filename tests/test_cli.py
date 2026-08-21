@@ -92,7 +92,9 @@ def test_daily_json_uses_global_flag_and_stable_schema(
                 "pdf_url": "https://arxiv.org/pdf/2608.12345",
             }
         ],
-        "failures": [{"source": "hf-trending", "message": "slow"}],
+        "failures": [
+            {"source": "hf-trending", "message": "source request failed"}
+        ],
         "report_path": "C:\\Vault\\PaperFlow\\Reports\\2026-08-20.md",
     }
 
@@ -306,9 +308,9 @@ def test_daily_all_sources_failed_returns_three(config, monkeypatch, capsys):
         "ok": False,
         "error": "all paper sources failed",
         "failures": [
-            {"source": "hf-daily", "message": "down"},
-            {"source": "hf-trending", "message": "slow"},
-            {"source": "arxiv", "message": "offline"},
+            {"source": "hf-daily", "message": "source request failed"},
+            {"source": "hf-trending", "message": "source request failed"},
+            {"source": "arxiv", "message": "source request failed"},
         ],
     }
 
@@ -558,6 +560,7 @@ def test_public_failures_allowlists_sources_and_safe_message_categories():
         SourceFailure("hf-trending", "network error"),
         SourceFailure("arxiv", "HTTP 100"),
         SourceFailure("arxiv", "HTTP 599"),
+        SourceFailure("arxiv", "ValueError"),
         SourceFailure("arxiv", "RuntimeError"),
         SourceFailure("arxiv", "_PrivateError2"),
         SourceFailure(f"arxiv\r\nBcc: {private}", "network error"),
@@ -573,8 +576,9 @@ def test_public_failures_allowlists_sources_and_safe_message_categories():
         SourceFailure("hf-trending", "network error"),
         SourceFailure("arxiv", "HTTP 100"),
         SourceFailure("arxiv", "HTTP 599"),
-        SourceFailure("arxiv", "RuntimeError"),
-        SourceFailure("arxiv", "_PrivateError2"),
+        SourceFailure("arxiv", "source request failed"),
+        SourceFailure("arxiv", "source request failed"),
+        SourceFailure("arxiv", "source request failed"),
         SourceFailure("unknown", "network error"),
         SourceFailure("hf-daily", "source request failed"),
         SourceFailure("hf-trending", "source request failed"),
@@ -631,7 +635,7 @@ def test_daily_partial_redacts_failures_in_json_and_normal_email(
 def test_daily_all_failed_redacts_json_human_and_failure_email_boundaries(
     config, monkeypatch, capsys, json_mode
 ):
-    private = "PRIVATE_ALL_FAILED_SENTINEL"
+    private = "PRIVATE_FAILURE_SENTINEL"
     monkeypatch.setenv("PAPERFLOW_GMAIL_ADDRESS", "sender@example.com")
     monkeypatch.setenv("PAPERFLOW_GMAIL_APP_PASSWORD", f"APP_{private}")
     monkeypatch.setenv(
@@ -639,6 +643,7 @@ def test_daily_all_failed_redacts_json_human_and_failure_email_boundaries(
     )
     cloud = replace(config, vault_path=None, mail_to="reader@example.com")
     failures = (
+        SourceFailure(private, private),
         SourceFailure(f"arxiv\r\nX-Private: {private}", "network error"),
         SourceFailure("hf-daily", f"HTTP 503 https://private.test/{private}"),
     )
@@ -667,10 +672,12 @@ def test_daily_all_failed_redacts_json_human_and_failure_email_boundaries(
     assert "source request failed" in sent[0][1]
     if json_mode:
         assert json.loads(output)["failures"] == [
+            {"source": "unknown", "message": "source request failed"},
             {"source": "unknown", "message": "network error"},
             {"source": "hf-daily", "message": "source request failed"},
         ]
     else:
+        assert "unknown: source request failed" in output
         assert "unknown: network error" in output
         assert "hf-daily: source request failed" in output
 

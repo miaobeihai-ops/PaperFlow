@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 from collections.abc import Sequence
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -33,9 +32,6 @@ from paperflow.search import search_history
 
 
 _PUBLIC_SOURCES = frozenset(("hf-daily", "hf-trending", "arxiv"))
-_PUBLIC_HTTP_FAILURE = re.compile(r"HTTP [1-5][0-9]{2}")
-_PUBLIC_EXCEPTION_FAILURE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_MAX_PUBLIC_EXCEPTION_LENGTH = 100
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -120,14 +116,14 @@ def _public_failures(
             else "unknown"
         )
         message = failure.message
-        message_is_public = isinstance(message, str) and (
-            message in ("request timed out", "network error")
-            or _PUBLIC_HTTP_FAILURE.fullmatch(message) is not None
-            or (
-                len(message) <= _MAX_PUBLIC_EXCEPTION_LENGTH
-                and _PUBLIC_EXCEPTION_FAILURE.fullmatch(message) is not None
-            )
+        message_is_public = isinstance(message, str) and message in (
+            "request timed out",
+            "network error",
         )
+        if isinstance(message, str) and len(message) == 8 and message.startswith("HTTP "):
+            status_text = message[5:]
+            if all("0" <= character <= "9" for character in status_text):
+                message_is_public = 100 <= int(status_text) <= 599
         public.append(
             SourceFailure(
                 source,
