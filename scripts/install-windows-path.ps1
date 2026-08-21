@@ -56,6 +56,9 @@ function Set-PaperFlowPathEntry {
 
     foreach ($rawEntry in @($CurrentPath -split ';')) {
         if ([string]::IsNullOrWhiteSpace($rawEntry)) {
+            if ($CurrentPath.Length -gt 0) {
+                $entries.Add($rawEntry)
+            }
             continue
         }
         $normalizedEntry = & $normalize $rawEntry
@@ -69,6 +72,13 @@ function Set-PaperFlowPathEntry {
             $newPresent = $true
         }
         $entries.Add($rawEntry)
+    }
+
+    if ($newPresent -and -not $changed) {
+        return [pscustomobject]@{
+            Changed = $false
+            Value = $CurrentPath
+        }
     }
 
     if (-not $newPresent) {

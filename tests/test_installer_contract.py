@@ -398,6 +398,33 @@ def test_set_path_entry_is_case_insensitive_and_idempotent():
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_set_path_entry_noop_preserves_blank_segments_exactly():
+    current_path = r"D:\PaperFlowData\bin;;  ;C:\Other"
+
+    result = _invoke_set_path_function(
+        current_path,
+        r"D:\PaperFlowData\bin",
+        r"C:\Legacy\PaperFlow\bin",
+    )
+
+    assert result == {"Changed": False, "Value": current_path}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_set_path_entry_migration_preserves_unrelated_blank_segments():
+    result = _invoke_set_path_function(
+        r"C:\Tools;;  ;C:\Legacy\PaperFlow\bin;;C:\Other",
+        r"D:\PaperFlowData\bin",
+        r"C:\Legacy\PaperFlow\bin",
+    )
+
+    assert result == {
+        "Changed": True,
+        "Value": r"C:\Tools;;  ;;C:\Other;D:\PaperFlowData\bin",
+    }
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
 def test_set_path_entry_preserves_existing_entry_when_new_and_legacy_match():
     current_path = r"d:\paperflowdata\BIN\\"
 
@@ -419,7 +446,7 @@ def test_set_path_entry_preserves_existing_entry_when_new_and_legacy_match():
             r" ; C:\Tools ;;;C:\Other; ",
             r"D:\PaperFlowData\bin",
             "",
-            r" C:\Tools ;C:\Other;D:\PaperFlowData\bin",
+            r" ; C:\Tools ;;;C:\Other; ;D:\PaperFlowData\bin",
         ),
         (
             r"C:\Legacy\bin;C:\Other;c:\legacy\BIN\\",
