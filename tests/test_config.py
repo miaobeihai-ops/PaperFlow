@@ -164,6 +164,47 @@ def test_runtime_dependencies_include_windows_tzdata_contract():
     with (PROJECT_ROOT / "pyproject.toml").open("rb") as handle:
         dependencies = tomllib.load(handle)["project"]["dependencies"]
 
-    assert (
-        'tzdata>=2025.2,<2027; sys_platform == "win32"' in dependencies
+    assert 'tzdata>=2025.2; sys_platform == "win32"' in dependencies
+
+
+@pytest.mark.parametrize(
+    ("invalid_value", "expected_message"),
+    [
+        (-1, "history_reports must be non-negative"),
+        (False, "history_reports must be an integer"),
+    ],
+)
+def test_cloud_config_rejects_invalid_history_reports(
+    invalid_value, expected_message
+):
+    raw_json = json.dumps(
+        {"keywords": {"robotics": 5}, "history_reports": invalid_value}
     )
+
+    with pytest.raises(ConfigError, match=f"^{expected_message}$"):
+        load_cloud_config(raw_json)
+
+
+@pytest.mark.parametrize(
+    ("toml_value", "expected_message"),
+    [
+        ("-1", "history_reports must be non-negative"),
+        ("false", "history_reports must be an integer"),
+    ],
+)
+def test_local_config_rejects_invalid_history_reports(
+    tmp_path, toml_value, expected_message
+):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'''vault_path = "{tmp_path.as_posix()}"
+history_reports = {toml_value}
+
+[keywords]
+robotics = 5
+''',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=f"^{expected_message}$"):
+        load_local_config(config_path)

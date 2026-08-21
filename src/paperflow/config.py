@@ -66,6 +66,8 @@ def _build(data: dict[str, Any], *, require_vault: bool) -> PaperFlowConfig:
     if not 1 <= top_n <= 50:
         raise ConfigError("top_n must be between 1 and 50")
     history_reports = _validate_integer(data.get("history_reports", 30), "history_reports")
+    if history_reports < 0:
+        raise ConfigError("history_reports must be non-negative")
     arxiv_categories = _validate_categories(data.get("arxiv_categories", ["cs.AI"]))
     timezone = _validate_non_empty_string(data.get("timezone", "Asia/Hong_Kong"), "timezone")
 

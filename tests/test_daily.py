@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from paperflow.config import ConfigError
-from paperflow.daily import AllSourcesFailed, run_daily
+from paperflow.daily import AllSourcesFailed, _failure_message, run_daily
 from paperflow.models import Paper
 
 
@@ -197,7 +197,7 @@ def test_daily_does_not_swallow_base_exceptions(config, monkeypatch):
         run_daily(config, "2026-08-20", write_report=False)
 
 
-def test_daily_compacts_failure_messages(config, monkeypatch):
+def test_daily_uses_only_exception_type_for_other_failures(config, monkeypatch):
     monkeypatch.setattr("paperflow.daily.fetch_hf_daily", lambda *_: [])
     monkeypatch.setattr(
         "paperflow.daily.fetch_hf_trending",
@@ -207,4 +207,33 @@ def test_daily_compacts_failure_messages(config, monkeypatch):
 
     result = run_daily(config, "2026-08-20", write_report=False)
 
-    assert result.failures[0].message == "first second"
+    assert result.failures[0].message == "RuntimeError"
+
+
+def test_failure_messages_do_not_leak_http_details():
+    sentinel = "PRIVATE_SENTINEL"
+    request = httpx.Request(
+        "GET",
+        f"https://example.test/private?token={sentinel}",
+        headers={"Authorization": sentinel},
+    )
+    response = httpx.Response(
+        401,
+        request=request,
+        headers={"X-Private": sentinel},
+        text=sentinel,
+    )
+    errors = (
+        (
+            httpx.HTTPStatusError(sentinel, request=request, response=response),
+            "HTTP 401",
+        ),
+        (httpx.ReadTimeout(sentinel, request=request), "request timed out"),
+        (httpx.ConnectError(sentinel, request=request), "network error"),
+        (RuntimeError(sentinel), "RuntimeError"),
+    )
+
+    messages = [_failure_message(error) for error, _ in errors]
+
+    assert messages == [expected for _, expected in errors]
+    assert all(sentinel not in message for message in messages)

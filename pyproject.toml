@@ -9,7 +9,7 @@ description = "Database-free daily paper discovery for Codex, Zotero, and Obsidi
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27,<0.29",
-    'tzdata>=2025.2,<2027; sys_platform == "win32"',
+    'tzdata>=2025.2; sys_platform == "win32"',
 ]
 
 [project.optional-dependencies]

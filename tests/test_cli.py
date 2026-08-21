@@ -48,6 +48,17 @@ def test_no_command_prints_help_and_returns_zero(capsys):
     assert "usage: paperflow" in capsys.readouterr().out
 
 
+def test_main_dispatches_daily_to_run_daily(monkeypatch):
+    commands = []
+    monkeypatch.setattr(
+        "paperflow.cli._run_daily",
+        lambda args: commands.append(args.command) or 7,
+    )
+
+    assert main(["daily", "--date", "2026-08-20", "--no-write"]) == 7
+    assert commands == ["daily"]
+
+
 def test_daily_json_uses_global_flag_and_stable_schema(
     config, monkeypatch, capsys
 ):

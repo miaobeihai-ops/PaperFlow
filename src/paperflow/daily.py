@@ -34,8 +34,13 @@ def _parse_date(value: str) -> date:
 
 
 def _failure_message(exc: Exception) -> str:
-    message = " ".join(str(exc).split())
-    return (message or type(exc).__name__)[:160]
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "request timed out"
+    if isinstance(exc, httpx.NetworkError):
+        return "network error"
+    return type(exc).__name__
 
 
 def run_daily(

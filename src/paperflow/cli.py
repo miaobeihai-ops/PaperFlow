@@ -88,19 +88,7 @@ def _print_result(result: DailyResult) -> None:
         print(f"report: {result.report_path}")
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    if args.version:
-        if args.json_output:
-            _print_json({"ok": True, "version": __version__})
-        else:
-            print(f"paperflow {__version__}")
-        return 0
-    if args.command is None:
-        parser.print_help()
-        return 0
-
+def _run_daily(args: argparse.Namespace) -> int:
     try:
         config = _load_config()
         target_date = _target_date(config, args.date)
@@ -133,6 +121,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_json(_result_json(result))
     else:
         _print_result(result)
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.version:
+        if args.json_output:
+            _print_json({"ok": True, "version": __version__})
+        else:
+            print(f"paperflow {__version__}")
+        return 0
+    if args.command is None:
+        parser.print_help()
+        return 0
+    if args.command == "daily":
+        return _run_daily(args)
     return 0
 
 
