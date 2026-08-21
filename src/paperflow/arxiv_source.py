@@ -28,8 +28,14 @@ def _text(node: ET.Element, name: str) -> str:
 def parse_arxiv_feed(xml: str) -> list[Paper]:
     result: list[Paper] = []
     root = ET.fromstring(xml)
+    if root.tag != f"{{{ATOM}}}feed":
+        raise ValueError("arXiv payload root must be an Atom feed")
+
     for entry in root.findall(f"{{{ATOM}}}entry"):
-        arxiv_id = canonical_arxiv_id(_text(entry, "id"))
+        try:
+            arxiv_id = canonical_arxiv_id(_text(entry, "id"))
+        except ValueError:
+            continue
         category = entry.find(f"{{{ARXIV}}}primary_category")
         authors = tuple(
             name

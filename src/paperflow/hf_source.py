@@ -40,7 +40,7 @@ def _upvotes(value: object) -> int | None:
 def parse_hf_payload(payload: str, source: str) -> list[Paper]:
     decoded: Any = json.loads(payload)
     if not isinstance(decoded, list):
-        return []
+        raise ValueError("Hugging Face payload must be a list")
 
     result: list[Paper] = []
     for item in decoded:

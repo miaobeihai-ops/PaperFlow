@@ -84,6 +84,27 @@ def test_parse_hf_prefers_paper_upvotes_over_wrapper_upvotes():
 
 
 @pytest.mark.parametrize(
+    "value",
+    [
+        {"secret": "PRIVATE_HF_RESPONSE"},
+        "PRIVATE_HF_RESPONSE",
+        None,
+    ],
+)
+def test_parse_hf_rejects_non_list_top_level_without_exposing_payload(value):
+    payload = json.dumps(value)
+
+    with pytest.raises(ValueError, match="^Hugging Face payload must be a list$") as exc_info:
+        parse_hf_payload(payload, "hf-daily")
+
+    assert "PRIVATE_HF_RESPONSE" not in str(exc_info.value)
+
+
+def test_parse_hf_accepts_empty_list():
+    assert parse_hf_payload("[]", "hf-daily") == []
+
+
+@pytest.mark.parametrize(
     ("fetcher", "expected_url", "expected_source"),
     [
         (
@@ -139,6 +160,64 @@ def test_parse_arxiv_normalizes_continuous_whitespace():
 
     assert paper.title == "Robotic 3D Reconstruction"
     assert paper.authors == ("Ada Researcher",)
+
+
+def test_parse_arxiv_skips_invalid_id_and_keeps_later_valid_entry():
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <entry>
+    <id>not-an-arxiv-id</id>
+    <title>Invalid entry</title>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2608.12345v2</id>
+    <published>2026-08-20T02:00:00Z</published>
+    <title>Valid entry</title>
+    <summary>Valid summary</summary>
+    <author><name>Ada Researcher</name></author>
+    <arxiv:primary_category term="cs.RO" />
+  </entry>
+</feed>"""
+
+    papers = parse_arxiv_feed(xml)
+
+    assert [paper.arxiv_id for paper in papers] == ["2608.12345"]
+    assert papers[0].title == "Valid entry"
+
+
+def test_parse_arxiv_does_not_swallow_non_value_errors(monkeypatch):
+    xml = (FIXTURES / "arxiv_feed.xml").read_text(encoding="utf-8")
+
+    def fail_canonicalization(value):
+        raise RuntimeError("canonicalizer failure")
+
+    monkeypatch.setattr(
+        "paperflow.arxiv_source.canonical_arxiv_id",
+        fail_canonicalization,
+    )
+
+    with pytest.raises(RuntimeError, match="^canonicalizer failure$"):
+        parse_arxiv_feed(xml)
+
+
+@pytest.mark.parametrize(
+    "xml",
+    [
+        "<feed>PRIVATE_ARXIV_RESPONSE</feed>",
+        '<not-feed xmlns="http://www.w3.org/2005/Atom">PRIVATE_ARXIV_RESPONSE</not-feed>',
+    ],
+)
+def test_parse_arxiv_rejects_non_atom_feed_root_without_exposing_xml(xml):
+    with pytest.raises(ValueError, match="^arXiv payload root must be an Atom feed$") as exc_info:
+        parse_arxiv_feed(xml)
+
+    assert "PRIVATE_ARXIV_RESPONSE" not in str(exc_info.value)
+
+
+def test_parse_arxiv_accepts_empty_atom_feed():
+    xml = '<feed xmlns="http://www.w3.org/2005/Atom" />'
+
+    assert parse_arxiv_feed(xml) == []
 
 
 def test_fetch_arxiv_uses_one_batched_category_request():
