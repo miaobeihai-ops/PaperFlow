@@ -4,6 +4,7 @@ from datetime import date
 import os
 from pathlib import Path
 import re
+import tempfile
 
 
 _REPORT_NAME = re.compile(r"^(\d{4}-\d{2}-\d{2})\.md$")
@@ -26,15 +27,26 @@ def write_daily_report(vault_path: Path, report_date: str, content: str) -> Path
     reports = Path(vault_path) / "PaperFlow" / "Reports"
     reports.mkdir(parents=True, exist_ok=True)
     target = reports / f"{report_date}.md"
-    temporary = reports / f".{report_date}.md.tmp"
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    descriptor = None
+    temporary = None
     try:
-        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{report_date}.", suffix=".tmp", dir=reports
+        )
+        temporary = Path(temporary_name)
+        stream = os.fdopen(descriptor, "w", encoding="utf-8", newline="\n")
+        descriptor = None
+        with stream:
             stream.write(normalized)
+            stream.flush()
         os.replace(temporary, target)
     except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
         try:
-            temporary.unlink(missing_ok=True)
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         except OSError:
             pass
         raise

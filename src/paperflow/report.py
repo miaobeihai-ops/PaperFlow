@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html import escape
+from urllib.parse import quote
 
 from paperflow import __version__
 from paperflow.models import RankedPaper, SourceFailure
+
+
+_MARKDOWN_ESCAPES = frozenset(r"\\`*_[]<>()!|~{}&")
 
 
 def _generated_at(now: datetime | None) -> str:
@@ -43,6 +47,66 @@ def _excerpt(abstract: str) -> str:
     return abstract if len(abstract) <= 500 else f"{abstract[:500]}…"
 
 
+def _visible_control(character: str) -> str | None:
+    codepoint = ord(character)
+    if character == "\n":
+        return r"\n"
+    if character == "\r":
+        return r"\r"
+    if character == "\t":
+        return r"\t"
+    if (
+        codepoint < 32
+        or 0x7F <= codepoint <= 0x9F
+        or codepoint in (0x2028, 0x2029)
+    ):
+        return f"\\u{codepoint:04x}"
+    return None
+
+
+def _markdown_text(value: str) -> str:
+    rendered = []
+    for character in value:
+        visible = _visible_control(character)
+        if visible is not None:
+            rendered.append(visible)
+        elif character in _MARKDOWN_ESCAPES:
+            rendered.append(f"\\{character}")
+        else:
+            rendered.append(character)
+    return "".join(rendered)
+
+
+def _code_span(value: str) -> str:
+    rendered = "".join(_visible_control(character) or character for character in value)
+    longest_run = 0
+    current_run = 0
+    for character in rendered:
+        if character == "`":
+            current_run += 1
+            longest_run = max(longest_run, current_run)
+        else:
+            current_run = 0
+    fence = "`" * (longest_run + 1)
+    needs_padding = rendered.startswith("`") or rendered.endswith("`")
+    needs_padding = needs_padding or (
+        rendered.strip(" ") != ""
+        and (rendered.startswith(" ") or rendered.endswith(" "))
+    )
+    padding = " " if needs_padding else ""
+    return f"{fence}{padding}{rendered}{padding}{fence}"
+
+
+def _link_destination(value: str) -> str:
+    rendered = []
+    for character in value:
+        if character in "() <>\\" or _visible_control(character) is not None:
+            rendered.append(quote(character, safe=""))
+        else:
+            rendered.append(character)
+    return "".join(rendered)
+
+
 def _stable_sources(papers: list[RankedPaper]) -> list[str]:
     seen: set[str] = set()
     sources = []
@@ -54,8 +118,8 @@ def _stable_sources(papers: list[RankedPaper]) -> list[str]:
     return sources
 
 
-def _single_line(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
+def _text_single_line(value: str) -> str:
+    return "".join(_visible_control(character) or character for character in value)
 
 
 def render_daily_markdown(
@@ -85,32 +149,32 @@ def render_daily_markdown(
         for failure in failures:
             lines.extend(
                 [
-                    f"- source: {_single_line(failure.source)}",
-                    f"  message: {_single_line(failure.message)}",
+                    f"- source: {_markdown_text(failure.source)}",
+                    f"  message: {_markdown_text(failure.message)}",
                 ]
             )
         lines.append("")
 
     for index, ranked in enumerate(papers, start=1):
         paper = ranked.paper
-        source_values = ", ".join(f"`{_single_line(value)}`" for value in paper.sources)
+        source_values = ", ".join(_code_span(value) for value in paper.sources)
         matched_values = ", ".join(
-            f"`{_single_line(value)}`" for value in ranked.matched_keywords
+            _code_span(value) for value in ranked.matched_keywords
         )
         lines.extend(
             [
-                f"## {index}. {_single_line(paper.title)}",
+                f"## {index}. {_markdown_text(paper.title)}",
                 "",
-                f"- arxiv_id: `{_single_line(paper.arxiv_id)}`",
-                f"- title: {_single_line(paper.title)}",
+                f"- arxiv_id: {_code_span(paper.arxiv_id)}",
+                f"- title: {_markdown_text(paper.title)}",
                 "- authors: "
-                + ", ".join(_single_line(value) for value in paper.authors),
+                + ", ".join(_markdown_text(value) for value in paper.authors),
                 f"- sources: {source_values}",
                 f"- score: {ranked.score}",
                 f"- matched: {matched_values}",
-                f"- arXiv: [Abstract]({_single_line(paper.url)})",
-                f"- PDF: [PDF]({_single_line(paper.pdf_url)})",
-                f"- abstract: {_single_line(_excerpt(paper.abstract))}",
+                f"- arXiv: [Abstract]({_link_destination(paper.url)})",
+                f"- PDF: [PDF]({_link_destination(paper.pdf_url)})",
+                f"- abstract: {_markdown_text(_excerpt(paper.abstract))}",
                 "",
             ]
         )
@@ -175,7 +239,8 @@ def render_email_text(
     if failures:
         lines.append("Source failures:")
         lines.extend(
-            f"- {_single_line(failure.source)}: {_single_line(failure.message)}"
+            f"- {_text_single_line(failure.source)}: "
+            f"{_text_single_line(failure.message)}"
             for failure in failures
         )
         lines.append("")
@@ -184,18 +249,20 @@ def render_email_text(
         paper = ranked.paper
         lines.extend(
             [
-                f"{index}. {_single_line(paper.title)}",
-                f"arXiv ID: {_single_line(paper.arxiv_id)}",
-                f"Authors: {', '.join(_single_line(value) for value in paper.authors)}",
-                f"Sources: {', '.join(_single_line(value) for value in paper.sources)}",
+                f"{index}. {_text_single_line(paper.title)}",
+                f"arXiv ID: {_text_single_line(paper.arxiv_id)}",
+                "Authors: "
+                + ", ".join(_text_single_line(value) for value in paper.authors),
+                "Sources: "
+                + ", ".join(_text_single_line(value) for value in paper.sources),
                 f"Score: {ranked.score}",
                 "Matched: "
                 + ", ".join(
-                    _single_line(value) for value in ranked.matched_keywords
+                    _text_single_line(value) for value in ranked.matched_keywords
                 ),
-                f"arXiv: {_single_line(paper.url)}",
-                f"PDF: {_single_line(paper.pdf_url)}",
-                f"Abstract: {_single_line(_excerpt(paper.abstract))}",
+                f"arXiv: {_text_single_line(paper.url)}",
+                f"PDF: {_text_single_line(paper.pdf_url)}",
+                f"Abstract: {_text_single_line(_excerpt(paper.abstract))}",
                 "",
             ]
         )

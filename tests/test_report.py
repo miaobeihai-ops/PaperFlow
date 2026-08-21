@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 
 import pytest
@@ -64,9 +65,9 @@ def test_render_daily_markdown_has_stable_frontmatter_and_paper_fields():
         '  - "hf-daily"\n'
     )
     expected_fields = [
-        "## 1. Robots < Vision",
+        "## 1. Robots \\< Vision",
         "- arxiv_id: `2608.12345`",
-        "- title: Robots < Vision",
+        "- title: Robots \\< Vision",
         "- authors: Ada Researcher",
         "- sources: `arxiv`, `hf-daily`",
         "- score: 85",
@@ -157,6 +158,86 @@ def test_render_daily_markdown_escapes_yaml_line_and_c1_controls():
     assert "message_key: true" not in yaml
 
 
+def test_render_daily_markdown_sanitizes_plain_body_text_by_context():
+    controls = "".join(chr(value) for value in range(0x00, 0x20))
+    controls += "".join(chr(value) for value in range(0x7F, 0xA0))
+    controls += "\u2028\u2029"
+    structural = r"*_[x](y)<tag>\`|~!{}"
+    paper = ranked_paper(
+        title=f"Unsafe{controls}{structural}",
+        authors=("Author\n*injected*",),
+        abstract="Abstract\r\n## injected [link](bad) <tag>",
+    )
+    failures = [SourceFailure("bad\n- injected", "failed\u0085*bold*")]
+
+    markdown = render_daily_markdown("2026-08-20", [paper], failures, now=NOW)
+    body = markdown.split("\n---\n", 1)[1]
+    title_line = next(line for line in body.split("\n") if line.startswith("## 1."))
+
+    for character in controls:
+        assert character not in title_line
+        if character == "\n":
+            visible = r"\n"
+        elif character == "\r":
+            visible = r"\r"
+        elif character == "\t":
+            visible = r"\t"
+        else:
+            visible = f"\\u{ord(character):04x}"
+        assert visible in title_line
+    assert r"\*\_\[x\]\(y\)\<tag\>\\\`\|\~\!\{\}" in title_line
+    assert "\n## injected" not in body
+    assert "\n- injected" not in body
+    assert "\u0085" not in body
+    assert "\u2028" not in body
+    assert "\u2029" not in body
+    assert "Author\\n\\*injected\\*" in body
+    assert "Abstract\\r\\n## injected \\[link\\]\\(bad\\) \\<tag\\>" in body
+    assert "bad\\n- injected" in body
+    assert "failed\\u0085\\*bold\\*" in body
+
+
+def test_render_daily_markdown_uses_safe_variable_length_code_spans():
+    paper = ranked_paper(
+        "2608.`edge",
+        sources=(
+            "robotics",
+            "a`b",
+            "`edge`",
+            "bad\nsource\u007f",
+            " spaced ",
+            " ",
+        ),
+        matched=("safe``ticks", "robotics"),
+    )
+
+    markdown = render_daily_markdown("2026-08-20", [paper], [], now=NOW)
+
+    assert "- arxiv_id: ``2608.`edge``" in markdown
+    assert (
+        "- sources: `robotics`, ``a`b``, `` `edge` ``, "
+        "`bad\\nsource\\u007f`, `  spaced  `, ` `"
+    ) in markdown
+    assert "- matched: ```safe``ticks```, `robotics`" in markdown
+    assert "\u007f" not in markdown.split("\n---\n", 1)[1]
+
+
+def test_render_daily_markdown_encodes_unsafe_link_destination_characters():
+    paper = ranked_paper(
+        url="https://example.test/a) (b)<c>\\d\n\u2028",
+        pdf_url="https://arxiv.org/pdf/2608.12345",
+    )
+
+    markdown = render_daily_markdown("2026-08-20", [paper], [], now=NOW)
+
+    assert (
+        "- arXiv: [Abstract](https://example.test/a%29%20%28b%29%3Cc%3E"
+        "%5Cd%0A%E2%80%A8)"
+    ) in markdown
+    assert "- PDF: [PDF](https://arxiv.org/pdf/2608.12345)" in markdown
+    assert "https://example.test/a) (b)" not in markdown
+
+
 def test_render_email_html_escapes_every_external_value_and_preserves_order():
     malicious = ranked_paper(
         title="Robots < Vision",
@@ -212,6 +293,45 @@ def test_render_email_text_contains_same_information_in_plain_text():
     assert "<html" not in rendered.lower()
 
 
+def test_render_email_text_preserves_backslashes_and_escapes_controls():
+    controls = "".join(chr(value) for value in range(0x00, 0x20))
+    controls += "".join(chr(value) for value in range(0x7F, 0xA0))
+    controls += "\u2028\u2029"
+    paper = ranked_paper(
+        title=f"LaTeX \\alpha{controls}",
+        authors=("Ada\\Lab\nResearcher",),
+        abstract="Method \\beta\r\nnext",
+        sources=("source\\name",),
+        matched=("key\\word",),
+    )
+    failure = SourceFailure("failed\\source\nnext", "timeout\u0085message")
+
+    rendered = render_email_text("2026-08-20", [paper], [failure])
+    title_line = next(line for line in rendered.split("\n") if line.startswith("1."))
+
+    assert r"LaTeX \alpha" in title_line
+    assert r"LaTeX \\alpha" not in title_line
+    for character in controls:
+        assert character not in title_line
+        if character == "\n":
+            visible = r"\n"
+        elif character == "\r":
+            visible = r"\r"
+        elif character == "\t":
+            visible = r"\t"
+        else:
+            visible = f"\\u{ord(character):04x}"
+        assert visible in title_line
+    assert r"Authors: Ada\Lab\nResearcher" in rendered
+    assert r"Sources: source\name" in rendered
+    assert r"Matched: key\word" in rendered
+    assert r"Abstract: Method \beta\r\nnext" in rendered
+    assert r"- failed\source\nnext: timeout\u0085message" in rendered
+    assert "\u0085" not in rendered
+    assert "\u2028" not in rendered
+    assert "\u2029" not in rendered
+
+
 def test_write_daily_report_creates_lf_utf8_target_and_replaces_same_day(tmp_path):
     target = write_daily_report(tmp_path, "2026-08-20", "first\r\nreport\r")
     replaced = write_daily_report(tmp_path, "2026-08-20", "café\r\nsecond")
@@ -223,6 +343,30 @@ def test_write_daily_report_creates_lf_utf8_target_and_replaces_same_day(tmp_pat
     assert [path.name for path in target.parent.glob("2026-08-20*.md")] == [
         "2026-08-20.md"
     ]
+
+
+def test_write_daily_report_uses_a_unique_same_directory_temp_each_time(
+    tmp_path, monkeypatch
+):
+    temporary_paths = []
+    original_replace = os.replace
+
+    def record_replace(source, destination):
+        temporary_paths.append(Path(source))
+        original_replace(source, destination)
+
+    monkeypatch.setattr("paperflow.obsidian.os.replace", record_replace)
+
+    write_daily_report(tmp_path, "2026-08-20", "first")
+    write_daily_report(tmp_path, "2026-08-20", "second")
+
+    reports = tmp_path / "PaperFlow" / "Reports"
+    assert len(temporary_paths) == 2
+    assert temporary_paths[0] != temporary_paths[1]
+    assert all(path.parent == reports for path in temporary_paths)
+    assert all(path.name.startswith(".2026-08-20") for path in temporary_paths)
+    assert all(path.name.endswith(".tmp") for path in temporary_paths)
+    assert list(reports.glob("*.tmp")) == []
 
 
 def test_write_daily_report_cleans_temp_and_preserves_target_on_replace_failure(
@@ -250,7 +394,7 @@ def test_write_daily_report_cleans_partial_temp_and_preserves_target_on_write_fa
     target = tmp_path / "PaperFlow" / "Reports" / "2026-08-20.md"
     target.parent.mkdir(parents=True)
     target.write_text("existing", encoding="utf-8")
-    original_open = Path.open
+    temporary_path = None
 
     class FailingWriter:
         def __enter__(self):
@@ -260,24 +404,23 @@ def test_write_daily_report_cleans_partial_temp_and_preserves_target_on_write_fa
             return False
 
         def write(self, value):
-            with original_open(self_path, "wb") as stream:
-                stream.write(value[:3].encode("utf-8"))
+            assert temporary_path is not None
+            temporary_path.write_bytes(value[:3].encode("utf-8"))
             raise OSError("write failed")
 
-    self_path = target.parent / ".2026-08-20.md.tmp"
+    def fail_fdopen(descriptor, *args, **kwargs):
+        nonlocal temporary_path
+        os.close(descriptor)
+        [temporary_path] = target.parent.glob(".2026-08-20*.tmp")
+        return FailingWriter()
 
-    def fail_temp_open(path, *args, **kwargs):
-        if path == self_path:
-            return FailingWriter()
-        return original_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", fail_temp_open)
+    monkeypatch.setattr("paperflow.obsidian.os.fdopen", fail_fdopen)
 
     with pytest.raises(OSError, match="write failed"):
         write_daily_report(tmp_path, "2026-08-20", "replacement")
 
     assert target.read_text(encoding="utf-8") == "existing"
-    assert not self_path.exists()
+    assert list(target.parent.glob("*.tmp")) == []
 
 
 def test_recent_arxiv_ids_scans_only_latest_strict_report_names(tmp_path):
