@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _load_config() -> PaperFlowConfig:
     private_config = os.environ.get("PAPERFLOW_PRIVATE_CONFIG_JSON")
-    if private_config:
+    if private_config is not None:
         return load_cloud_config(private_config)
     try:
         return load_local_config()

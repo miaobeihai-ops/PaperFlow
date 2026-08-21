@@ -1,4 +1,6 @@
 import json
+import re
+import sys
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -6,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from paperflow.config import ConfigError
-from paperflow.cli import main
+from paperflow.cli import _target_date, main
 from paperflow.daily import AllSourcesFailed
 from paperflow.models import DailyResult, Paper, RankedPaper, SourceFailure
 
@@ -111,19 +113,30 @@ def test_daily_uses_cloud_config_and_no_write(config, monkeypatch, capsys):
     assert "2026-08-20: 0 papers" in capsys.readouterr().out
 
 
-def test_empty_private_config_uses_local_config(config, monkeypatch):
+def test_empty_private_config_uses_cloud_loader_and_returns_two(monkeypatch, capsys):
+    calls = []
+
+    def reject_empty_cloud_config(raw):
+        calls.append(raw)
+        raise ConfigError("PAPERFLOW_PRIVATE_CONFIG_JSON is invalid JSON")
+
     monkeypatch.setenv("PAPERFLOW_PRIVATE_CONFIG_JSON", "")
-    monkeypatch.setattr("paperflow.cli.load_local_config", lambda: config)
     monkeypatch.setattr(
         "paperflow.cli.load_cloud_config",
-        lambda *_: pytest.fail("empty private config must not be loaded"),
+        reject_empty_cloud_config,
     )
     monkeypatch.setattr(
-        "paperflow.cli.run_daily",
-        lambda *_args, **_kwargs: DailyResult("2026-08-20", (), (), None),
+        "paperflow.cli.load_local_config",
+        lambda: pytest.fail("local config must not be loaded when env var is present"),
     )
 
-    assert main(["daily", "--date", "2026-08-20", "--no-write"]) == 0
+    assert main(["--json", "daily", "--no-write"]) == 2
+
+    assert calls == [""]
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": False,
+        "error": "PAPERFLOW_PRIVATE_CONFIG_JSON is invalid JSON",
+    }
 
 
 def test_daily_defaults_to_today_in_config_timezone(config, monkeypatch):
@@ -155,6 +168,14 @@ def test_daily_defaults_to_today_in_config_timezone(config, monkeypatch):
 
     assert observed["timezone"].key == "Asia/Hong_Kong"
     assert observed["target_date"] == "2026-08-21"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows tzdata contract")
+def test_default_hong_kong_date_uses_real_zoneinfo_on_windows(config):
+    target_date = _target_date(config, None)
+
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", target_date)
+    assert datetime.strptime(target_date, "%Y-%m-%d").date().isoformat() == target_date
 
 
 @pytest.mark.parametrize(

@@ -1,8 +1,13 @@
 import json
+import tomllib
+from pathlib import Path
 
 import pytest
 
 from paperflow.config import ConfigError, _build, load_cloud_config, load_local_config
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_load_local_config(tmp_path):
@@ -153,3 +158,12 @@ robotics = 5
 
     assert str(exc_info.value) == "vault_path must be absolute"
     assert "PRIVATE_SENTINEL" not in str(exc_info.value)
+
+
+def test_runtime_dependencies_include_windows_tzdata_contract():
+    with (PROJECT_ROOT / "pyproject.toml").open("rb") as handle:
+        dependencies = tomllib.load(handle)["project"]["dependencies"]
+
+    assert (
+        'tzdata>=2025.2,<2027; sys_platform == "win32"' in dependencies
+    )
