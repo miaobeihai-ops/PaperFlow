@@ -7,7 +7,14 @@ from collections.abc import Sequence
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
+
 from paperflow import __version__
+from paperflow.arxiv_source import (
+    ArxivPaperNotFound,
+    fetch_arxiv_by_id,
+    search_arxiv,
+)
 from paperflow.config import (
     ConfigError,
     PaperFlowConfig,
@@ -16,6 +23,9 @@ from paperflow.config import (
 )
 from paperflow.daily import AllSourcesFailed, run_daily
 from paperflow.models import DailyResult, SourceFailure
+from paperflow.normalize import canonical_arxiv_id
+from paperflow.notes import NoteExists, write_paper_note
+from paperflow.search import search_history
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,6 +36,21 @@ def build_parser() -> argparse.ArgumentParser:
     daily = subparsers.add_parser("daily")
     daily.add_argument("--date")
     daily.add_argument("--no-write", action="store_true")
+    daily.add_argument(
+        "--json", action="store_true", dest="json_output", default=argparse.SUPPRESS
+    )
+    search = subparsers.add_parser("search")
+    search.add_argument("query")
+    search.add_argument("--history-only", action="store_true")
+    search.add_argument(
+        "--json", action="store_true", dest="json_output", default=argparse.SUPPRESS
+    )
+    note = subparsers.add_parser("note")
+    note.add_argument("arxiv_id")
+    note.add_argument("--force", action="store_true")
+    note.add_argument(
+        "--json", action="store_true", dest="json_output", default=argparse.SUPPRESS
+    )
     return parser
 
 
@@ -88,6 +113,13 @@ def _print_result(result: DailyResult) -> None:
         print(f"report: {result.report_path}")
 
 
+def _print_error(args: argparse.Namespace, message: str) -> None:
+    if args.json_output:
+        _print_json({"ok": False, "error": message})
+    else:
+        print(f"error: {message}")
+
+
 def _run_daily(args: argparse.Namespace) -> int:
     try:
         config = _load_config()
@@ -124,6 +156,104 @@ def _run_daily(args: argparse.Namespace) -> int:
     return 0
 
 
+def _paper_json(paper) -> dict[str, object]:
+    return {
+        "arxiv_id": paper.arxiv_id,
+        "title": paper.title,
+        "authors": list(paper.authors),
+        "abstract": paper.abstract,
+        "url": paper.url,
+        "pdf_url": paper.pdf_url,
+    }
+
+
+def _run_search(args: argparse.Namespace) -> int:
+    try:
+        if not args.query.strip():
+            raise ConfigError("query must not be blank")
+        config = _load_config()
+        if args.history_only and config.vault_path is None:
+            raise ConfigError("vault_path is required for history-only search")
+        history = (
+            search_history(config.vault_path, args.query)
+            if config.vault_path is not None
+            else []
+        )
+        online = []
+        if not args.history_only:
+            with httpx.Client() as client:
+                online = search_arxiv(client, args.query)
+    except ConfigError as exc:
+        _print_error(args, str(exc))
+        return 2
+    except (httpx.HTTPError, ArxivPaperNotFound):
+        _print_error(args, "arXiv request failed")
+        return 3
+    except ValueError:
+        _print_error(args, "arXiv response was invalid")
+        return 3
+
+    payload = {
+        "ok": True,
+        "query": args.query,
+        "history": history,
+        "online": [_paper_json(paper) for paper in online],
+    }
+    if args.json_output:
+        _print_json(payload)
+    else:
+        print(f"history: {len(history)}; online: {len(online)}")
+        for item in history:
+            print(f"{item['arxiv_id']}  {item['title']}")
+        for paper in online:
+            print(f"{paper.arxiv_id}  {paper.title}")
+    return 0
+
+
+def _run_note(args: argparse.Namespace) -> int:
+    try:
+        config = _load_config()
+        if config.vault_path is None:
+            raise ConfigError("vault_path is required for paper notes")
+        try:
+            arxiv_id = canonical_arxiv_id(args.arxiv_id)
+        except ValueError as exc:
+            raise ConfigError("invalid arXiv identifier") from exc
+        with httpx.Client() as client:
+            paper = fetch_arxiv_by_id(client, arxiv_id)
+        note_path = write_paper_note(
+            config.vault_path,
+            paper,
+            force=args.force,
+        )
+    except ConfigError as exc:
+        _print_error(args, str(exc))
+        return 2
+    except NoteExists as exc:
+        _print_error(args, str(exc))
+        return 4
+    except ArxivPaperNotFound as exc:
+        _print_error(args, str(exc))
+        return 3
+    except httpx.HTTPError:
+        _print_error(args, "arXiv request failed")
+        return 3
+    except (ValueError, OSError):
+        _print_error(args, "paper note could not be created")
+        return 3
+
+    payload = {
+        "ok": True,
+        "arxiv_id": arxiv_id,
+        "note_path": str(note_path),
+    }
+    if args.json_output:
+        _print_json(payload)
+    else:
+        print(f"note: {note_path}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -138,6 +268,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "daily":
         return _run_daily(args)
+    if args.command == "search":
+        return _run_search(args)
+    if args.command == "note":
+        return _run_note(args)
     return 0
 
 

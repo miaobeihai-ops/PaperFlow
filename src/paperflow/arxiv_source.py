@@ -14,6 +14,10 @@ ATOM = "http://www.w3.org/2005/Atom"
 ARXIV = "http://arxiv.org/schemas/atom"
 
 
+class ArxivPaperNotFound(ValueError):
+    pass
+
+
 def _clean(value: object) -> str:
     return " ".join(str(value or "").split())
 
@@ -81,3 +85,45 @@ def fetch_arxiv(
     )
     url = f"https://export.arxiv.org/api/query?{query}"
     return parse_arxiv_feed(request_with_retry(client, url).text)
+
+
+def _validate_max_results(max_results: int) -> None:
+    if type(max_results) is not int:
+        raise TypeError("max_results must be an integer")
+    if not 1 <= max_results <= 100:
+        raise ValueError("max_results must be between 1 and 100")
+
+
+def search_arxiv(
+    client: httpx.Client,
+    query: str,
+    max_results: int = 20,
+) -> list[Paper]:
+    cleaned = query.strip()
+    if not cleaned:
+        raise ValueError("query must not be blank")
+    _validate_max_results(max_results)
+    encoded = urllib.parse.urlencode(
+        {
+            "search_query": f"all:{cleaned}",
+            "start": 0,
+            "max_results": max_results,
+            "sortBy": "relevance",
+            "sortOrder": "descending",
+        }
+    )
+    url = f"https://export.arxiv.org/api/query?{encoded}"
+    return parse_arxiv_feed(request_with_retry(client, url).text)
+
+
+def fetch_arxiv_by_id(client: httpx.Client, value: str) -> Paper:
+    arxiv_id = canonical_arxiv_id(value)
+    encoded = urllib.parse.urlencode(
+        {"id_list": arxiv_id, "start": 0, "max_results": 1}
+    )
+    url = f"https://export.arxiv.org/api/query?{encoded}"
+    papers = parse_arxiv_feed(request_with_retry(client, url).text)
+    for paper in papers:
+        if canonical_arxiv_id(paper.arxiv_id) == arxiv_id:
+            return paper
+    raise ArxivPaperNotFound("paper was not found")

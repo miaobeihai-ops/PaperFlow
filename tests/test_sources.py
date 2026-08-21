@@ -6,7 +6,13 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from paperflow.arxiv_source import fetch_arxiv, parse_arxiv_feed
+from paperflow.arxiv_source import (
+    ArxivPaperNotFound,
+    fetch_arxiv,
+    fetch_arxiv_by_id,
+    parse_arxiv_feed,
+    search_arxiv,
+)
 from paperflow.fetch import request_with_retry
 from paperflow.hf_source import fetch_hf_daily, fetch_hf_trending, parse_hf_payload
 
@@ -247,6 +253,82 @@ def test_fetch_arxiv_uses_one_batched_category_request():
         "sortOrder": ["descending"],
     }
     assert papers[0].arxiv_id == "2608.12345"
+
+
+def test_search_arxiv_uses_one_encoded_request_without_parameter_injection():
+    calls = []
+
+    def handler(request):
+        calls.append(request.url)
+        return httpx.Response(
+            200,
+            text=(FIXTURES / "arxiv_feed.xml").read_text(encoding="utf-8"),
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        papers = search_arxiv(client, "3d reconstruction&max_results=99", max_results=20)
+
+    assert len(calls) == 1
+    parsed = urlparse(str(calls[0]))
+    assert parsed.netloc == "export.arxiv.org"
+    assert parse_qs(parsed.query) == {
+        "search_query": ["all:3d reconstruction&max_results=99"],
+        "start": ["0"],
+        "max_results": ["20"],
+        "sortBy": ["relevance"],
+        "sortOrder": ["descending"],
+    }
+    assert papers[0].arxiv_id == "2608.12345"
+
+
+@pytest.mark.parametrize("query", ["", " \t"])
+def test_search_arxiv_rejects_blank_query_without_request(query):
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: pytest.fail("must not request"))
+    )
+    with client, pytest.raises(ValueError, match="query must not be blank"):
+        search_arxiv(client, query)
+
+
+@pytest.mark.parametrize("max_results", [0, 101, True, 1.5])
+def test_search_arxiv_rejects_invalid_max_results(max_results):
+    with httpx.Client() as client, pytest.raises((TypeError, ValueError)):
+        search_arxiv(client, "robotics", max_results=max_results)
+
+
+def test_fetch_arxiv_by_id_uses_id_list_once_and_selects_exact_match():
+    calls = []
+    fixture = (FIXTURES / "arxiv_feed.xml").read_text(encoding="utf-8")
+    valid_entry = fixture[fixture.index("  <entry>") : fixture.index("</feed>")]
+    mixed = fixture.replace("2608.12345", "2608.99999").replace(
+        "</feed>", f"{valid_entry}</feed>"
+    )
+
+    def handler(request):
+        calls.append(request.url)
+        return httpx.Response(200, text=mixed)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = fetch_arxiv_by_id(client, "https://arxiv.org/abs/2608.12345v2")
+
+    assert len(calls) == 1
+    assert parse_qs(urlparse(str(calls[0])).query) == {
+        "id_list": ["2608.12345"],
+        "start": ["0"],
+        "max_results": ["1"],
+    }
+    assert result.arxiv_id == "2608.12345"
+
+
+def test_fetch_arxiv_by_id_rejects_wrong_first_result():
+    fixture = (FIXTURES / "arxiv_feed.xml").read_text(encoding="utf-8")
+    wrong = fixture.replace("2608.12345", "2608.99999")
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text=wrong))
+    )
+
+    with client, pytest.raises(ArxivPaperNotFound, match="paper was not found"):
+        fetch_arxiv_by_id(client, "2608.12345")
 
 
 def test_request_retries_429_then_succeeds(monkeypatch):

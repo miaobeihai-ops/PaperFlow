@@ -6,11 +6,13 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+import httpx
 
 from paperflow.config import ConfigError
 from paperflow.cli import _target_date, main
 from paperflow.daily import AllSourcesFailed
 from paperflow.models import DailyResult, Paper, RankedPaper, SourceFailure
+from paperflow.notes import NoteExists
 
 
 def test_version_text(capsys):
@@ -321,3 +323,166 @@ def test_daily_does_not_mask_unexpected_errors(config, monkeypatch):
 
     with pytest.raises(RuntimeError, match="bug"):
         main(["daily", "--date", "2026-08-20"])
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--json", "search", "3d reconstruction", "--history-only"],
+        ["search", "3d reconstruction", "--history-only", "--json"],
+    ],
+)
+def test_search_json_works_before_or_after_subcommand_and_history_only_is_offline(
+    config, monkeypatch, capsys, argv
+):
+    monkeypatch.delenv("PAPERFLOW_PRIVATE_CONFIG_JSON", raising=False)
+    monkeypatch.setattr("paperflow.cli.load_local_config", lambda: config)
+    monkeypatch.setattr(
+        "paperflow.cli.search_history",
+        lambda vault, query: [
+            {"title": "Robotic 3D Reconstruction", "arxiv_id": "2608.12345", "path": "report.md"}
+        ],
+    )
+    monkeypatch.setattr(
+        "paperflow.cli.httpx.Client",
+        lambda: pytest.fail("history-only must not create a client"),
+    )
+
+    assert main(argv) == 0
+
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": True,
+        "query": "3d reconstruction",
+        "history": [
+            {"title": "Robotic 3D Reconstruction", "arxiv_id": "2608.12345", "path": "report.md"}
+        ],
+        "online": [],
+    }
+
+
+def test_search_online_cloud_without_vault_uses_one_client_and_writes_nothing(
+    config, monkeypatch, capsys, tmp_path
+):
+    cloud = replace(config, vault_path=None)
+    calls = []
+
+    class Client:
+        def __enter__(self):
+            calls.append("enter")
+            return self
+
+        def __exit__(self, *_args):
+            calls.append("exit")
+
+    monkeypatch.setenv("PAPERFLOW_PRIVATE_CONFIG_JSON", "{}")
+    monkeypatch.setattr("paperflow.cli.load_cloud_config", lambda _raw: cloud)
+    monkeypatch.setattr("paperflow.cli.httpx.Client", Client)
+    monkeypatch.setattr(
+        "paperflow.cli.search_arxiv",
+        lambda client, query: calls.append((client, query)) or [daily_result().papers[0].paper],
+    )
+    monkeypatch.chdir(tmp_path)
+    before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+
+    assert main(["search", "robotics", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["history"] == []
+    assert payload["online"][0]["arxiv_id"] == "2608.12345"
+    assert calls[0] == "enter"
+    assert calls[1][1] == "robotics"
+    assert calls[2] == "exit"
+    assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
+
+
+def test_search_history_only_without_cloud_vault_is_config_error(
+    config, monkeypatch, capsys
+):
+    monkeypatch.setenv("PAPERFLOW_PRIVATE_CONFIG_JSON", "{}")
+    monkeypatch.setattr(
+        "paperflow.cli.load_cloud_config",
+        lambda _raw: replace(config, vault_path=None),
+    )
+
+    assert main(["search", "robotics", "--history-only", "--json"]) == 2
+    assert json.loads(capsys.readouterr().out)["ok"] is False
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--json", "note", "2608.12345"],
+        ["note", "2608.12345", "--json"],
+    ],
+)
+def test_note_json_positions_use_one_id_fetch_and_write(config, monkeypatch, capsys, argv):
+    calls = []
+
+    class Client:
+        def __enter__(self):
+            calls.append("enter")
+            return self
+
+        def __exit__(self, *_args):
+            calls.append("exit")
+
+    monkeypatch.delenv("PAPERFLOW_PRIVATE_CONFIG_JSON", raising=False)
+    monkeypatch.setattr("paperflow.cli.load_local_config", lambda: config)
+    monkeypatch.setattr("paperflow.cli.httpx.Client", Client)
+    monkeypatch.setattr(
+        "paperflow.cli.fetch_arxiv_by_id",
+        lambda client, arxiv_id: calls.append((client, arxiv_id)) or daily_result().papers[0].paper,
+    )
+    monkeypatch.setattr(
+        "paperflow.cli.write_paper_note",
+        lambda vault, paper, force=False: calls.append((vault, paper, force))
+        or vault / "PaperFlow" / "Papers" / "2608.12345.md",
+    )
+
+    assert main(argv) == 0
+
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": True,
+        "arxiv_id": "2608.12345",
+        "note_path": str(config.vault_path / "PaperFlow" / "Papers" / "2608.12345.md"),
+    }
+    assert calls[1][1] == "2608.12345"
+    assert calls[2] == "exit"
+    assert calls[3][2] is False
+
+
+def test_note_exists_returns_four_and_force_is_forwarded(config, monkeypatch, capsys):
+    monkeypatch.delenv("PAPERFLOW_PRIVATE_CONFIG_JSON", raising=False)
+    monkeypatch.setattr("paperflow.cli.load_local_config", lambda: config)
+    monkeypatch.setattr("paperflow.cli.fetch_arxiv_by_id", lambda *_: daily_result().papers[0].paper)
+    observed = []
+
+    def write(_vault, _paper, force=False):
+        observed.append(force)
+        if not force:
+            raise NoteExists("paper note already exists")
+        return config.vault_path / "PaperFlow" / "Papers" / "2608.12345.md"
+
+    monkeypatch.setattr("paperflow.cli.write_paper_note", write)
+
+    assert main(["note", "2608.12345", "--json"]) == 4
+    assert json.loads(capsys.readouterr().out)["ok"] is False
+    assert main(["note", "2608.12345", "--force", "--json"]) == 0
+    capsys.readouterr()
+    assert observed == [False, True]
+
+
+def test_note_network_error_is_sanitized(config, monkeypatch, capsys):
+    monkeypatch.delenv("PAPERFLOW_PRIVATE_CONFIG_JSON", raising=False)
+    monkeypatch.setattr("paperflow.cli.load_local_config", lambda: config)
+
+    def fail(*_args):
+        request = httpx.Request("GET", "https://export.arxiv.org/api/query?secret=PRIVATE")
+        raise httpx.ConnectError("PRIVATE_URL_FAILURE", request=request)
+
+    monkeypatch.setattr("paperflow.cli.fetch_arxiv_by_id", fail)
+
+    assert main(["note", "2608.12345", "--json"]) == 3
+    output = capsys.readouterr().out
+    assert "PRIVATE" not in output
+    assert json.loads(output) == {"ok": False, "error": "arXiv request failed"}
