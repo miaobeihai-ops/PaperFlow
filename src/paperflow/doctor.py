@@ -19,9 +19,13 @@ class Check:
 
 
 def _first_existing(
-    candidates: Sequence[Path], path_exists: Callable[[Path], bool]
+    candidates: Sequence[Path],
+    path_exists: Callable[[Path], bool],
+    path_is_file: Callable[[Path], bool],
 ) -> bool:
-    return any(path_exists(candidate) for candidate in candidates)
+    return any(
+        path_exists(candidate) and path_is_file(candidate) for candidate in candidates
+    )
 
 
 def _unique_paths(candidates: Sequence[Path]) -> tuple[Path, ...]:
@@ -34,6 +38,8 @@ def run_checks(
     vault_path: Path | None = None,
     which: Callable[[str], str | None] = shutil.which,
     path_exists: Callable[[Path], bool] = Path.exists,
+    path_is_file: Callable[[Path], bool] = Path.is_file,
+    path_is_dir: Callable[[Path], bool] = Path.is_dir,
     environ: Mapping[str, str] | None = None,
     python_version: Sequence[int] | None = None,
     skill_path: Path | None = None,
@@ -65,19 +71,26 @@ def run_checks(
     config_ok = False
     config_message = "Configuration was not found"
     if actual_config_path is not None and path_exists(actual_config_path):
-        try:
-            loaded_config = load_local_config(actual_config_path)
-        except (ConfigError, OSError, ValueError):
+        if not path_is_file(actual_config_path):
             config_message = "Configuration is invalid"
         else:
-            config_ok = True
-            config_message = "Configuration is valid"
+            try:
+                loaded_config = load_local_config(actual_config_path)
+            except (ConfigError, OSError, ValueError):
+                config_message = "Configuration is invalid"
+            else:
+                config_ok = True
+                config_message = "Configuration is valid"
     checks.append(Check("Configuration", config_ok, True, config_message))
 
     actual_vault_path = vault_path
     if actual_vault_path is None and loaded_config is not None:
         actual_vault_path = loaded_config.vault_path
-    vault_ok = actual_vault_path is not None and path_exists(actual_vault_path)
+    vault_ok = (
+        actual_vault_path is not None
+        and path_exists(actual_vault_path)
+        and path_is_dir(actual_vault_path)
+    )
     checks.append(
         Check(
             "Vault",
@@ -116,7 +129,7 @@ def run_checks(
             / "SKILL.md"
         )
         skill_candidates = (*user_candidates, repo_skill)
-    skill_ok = _first_existing(skill_candidates, path_exists)
+    skill_ok = _first_existing(skill_candidates, path_exists, path_is_file)
     checks.append(
         Check(
             "PaperFlow Skill",
@@ -130,7 +143,11 @@ def run_checks(
 
     program_files = [
         value
-        for value in (env.get("PROGRAMFILES"), env.get("PROGRAMFILES(X86)"))
+        for value in (
+            env.get("PROGRAMFILES"),
+            env.get("PROGRAMFILES(X86)"),
+            env.get("PROGRAMW6432"),
+        )
         if value
     ]
     local_app_data = env.get("LOCALAPPDATA")
@@ -150,7 +167,7 @@ def run_checks(
     zotero_candidates = _unique_paths(zotero_candidates)
     obsidian_candidates = _unique_paths(obsidian_candidates)
 
-    zotero_ok = _first_existing(zotero_candidates, path_exists)
+    zotero_ok = _first_existing(zotero_candidates, path_exists, path_is_file)
     checks.append(
         Check(
             "Zotero",
@@ -159,7 +176,7 @@ def run_checks(
             "Zotero is available" if zotero_ok else "Zotero was not found",
         )
     )
-    obsidian_ok = _first_existing(obsidian_candidates, path_exists)
+    obsidian_ok = _first_existing(obsidian_candidates, path_exists, path_is_file)
     checks.append(
         Check(
             "Obsidian",

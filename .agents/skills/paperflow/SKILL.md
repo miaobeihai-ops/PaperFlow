@@ -9,7 +9,7 @@ Use PaperFlow as the single entry point. ALWAYS use JSON. Parse only fields retu
 
 ## Quick Reference
 
-- Daily: `paperflow --json daily`. By default it writes a new or atomically updates today's Obsidian Report; this operation is atomic and same-day idempotent. After success, report `report_path` to the user. Only `--no-write` prevents the write. Use only `--date`, `--no-write`, or `--email` when requested. Treat `partial=true` as a valid result and identify each failed source.
+- Daily: `paperflow --json daily`. By default it writes a new or atomically updates today's Obsidian Report; this operation is atomic and same-day idempotent. After success, report `report_path` to the user. Only `--no-write` prevents the write. Use only `--date` or `--no-write` when requested. For cloud email, use `paperflow --json daily --email --no-write`; it does not write a local report. Treat `partial=true` as a valid result and identify each failed source.
 - Search: `paperflow --json search "<user query>"`. Show both `history` and `online`; online results are not saved. Use `--history-only` only when requested.
 - Note: first search, show the target and proposed `PaperFlow/Papers/<id>.md`, and wait until the user explicitly requests saving. Then run `paperflow --json note <arxiv-id>`. On exit 4, never add `--force` yourself. Run `paperflow --json note <arxiv-id> --force` only after the user explicitly approves replacing the existing note.
 - Diagnostics: `paperflow --json doctor`. It is read-only. Explain required versus optional checks; do not install anything.

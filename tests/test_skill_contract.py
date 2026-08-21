@@ -103,6 +103,19 @@ def test_skill_daily_write_behavior_and_doctor_read_only_are_unambiguous():
     assert text.casefold().count("read-only") == 1
 
 
+def test_skill_email_uses_complete_cloud_no_write_command():
+    text = _skill_text()
+    daily = next(line for line in text.splitlines() if line.startswith("- Daily:"))
+    command = "paperflow --json daily --email --no-write"
+    folded = daily.casefold()
+
+    assert f"`{command}`" in daily
+    assert "cloud email" in folded
+    assert "does not write" in folded
+    assert "local report" in folded
+    assert "`--email`" not in daily.replace(f"`{command}`", "")
+
+
 def test_skill_is_concise_and_has_required_sections():
     text = _skill_text()
     assert len(re.findall(r"\b[\w'-]+\b", text)) < 500

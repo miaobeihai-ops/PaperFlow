@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import subprocess
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -69,6 +70,8 @@ def test_run_checks_core_injection_and_windows_app_candidates(tmp_path):
             skill_path=skill_path,
             which=which,
             path_exists=path_exists,
+            path_is_file=lambda path: path in {obsidian_programs, zotero_programs},
+            path_is_dir=lambda _path: False,
             environ={
                 "PROGRAMFILES": "C:/Program Files",
                 "LOCALAPPDATA": "C:/Users/test/AppData/Local",
@@ -117,6 +120,8 @@ def test_user_level_programs_app_candidate_is_detected(
             skill_path=Path("C:/missing-skill.md"),
             which=lambda _command: None,
             path_exists=path_exists,
+            path_is_file=lambda path: path == expected,
+            path_is_dir=lambda _path: False,
             environ={"LOCALAPPDATA": str(local_app_data)},
             python_version=(3, 11, 0),
         )
@@ -141,9 +146,12 @@ def test_windows_app_candidates_are_stably_ordered_and_deduplicated():
         skill_path=Path("C:/missing-skill.md"),
         which=lambda _command: None,
         path_exists=path_exists,
+        path_is_file=lambda _path: False,
+        path_is_dir=lambda _path: False,
         environ={
             "PROGRAMFILES": "C:/Program Files",
             "PROGRAMFILES(X86)": "C:/Program Files",
+            "PROGRAMW6432": "C:/ProgramW6432",
             "LOCALAPPDATA": "C:/Users/test/AppData/Local",
         },
         python_version=(3, 11, 0),
@@ -154,13 +162,154 @@ def test_windows_app_candidates_are_stably_ordered_and_deduplicated():
     ]
     assert executable_candidates == [
         Path("C:/Program Files/Zotero/zotero.exe"),
+        Path("C:/ProgramW6432/Zotero/zotero.exe"),
         Path("C:/Users/test/AppData/Local/Programs/Zotero/zotero.exe"),
         Path("C:/Users/test/AppData/Local/Zotero/zotero.exe"),
         Path("C:/Program Files/Obsidian/Obsidian.exe"),
+        Path("C:/ProgramW6432/Obsidian/Obsidian.exe"),
         Path("C:/Users/test/AppData/Local/Programs/Obsidian/Obsidian.exe"),
         Path("C:/Users/test/AppData/Local/Obsidian/Obsidian.exe"),
     ]
     assert len(executable_candidates) == len(set(executable_candidates))
+
+
+def test_injected_path_types_reject_wrong_types_and_accept_correct_types(tmp_path):
+    doctor = _doctor()
+    config_path = tmp_path / "config.toml"
+    vault_dir = tmp_path / "Vault"
+    vault_dir.mkdir()
+    _valid_config(config_path, vault_dir)
+    vault_file = tmp_path / "vault-file"
+    vault_file.write_text("not a directory", encoding="utf-8")
+    skill_dir = tmp_path / "skill-dir"
+    skill_dir.mkdir()
+    skill_file = tmp_path / "SKILL.md"
+    skill_file.write_text("skill", encoding="utf-8")
+    local_app_data = tmp_path / "Local"
+    obsidian_path = local_app_data / "Programs" / "Obsidian" / "Obsidian.exe"
+    zotero_path = local_app_data / "Programs" / "Zotero" / "zotero.exe"
+    existing = {
+        config_path,
+        vault_dir,
+        vault_file,
+        skill_dir,
+        skill_file,
+        obsidian_path,
+        zotero_path,
+    }
+
+    wrong = _by_name(
+        doctor.run_checks(
+            config_path=skill_dir,
+            vault_path=vault_file,
+            skill_path=skill_dir,
+            which=lambda _command: None,
+            path_exists=lambda path: path in existing,
+            path_is_file=lambda path: path == config_path,
+            path_is_dir=lambda path: path in {skill_dir, obsidian_path, zotero_path},
+            environ={"LOCALAPPDATA": str(local_app_data)},
+            python_version=(3, 11, 0),
+        )
+    )
+
+    assert wrong["Configuration"].ok is False
+    assert wrong["Vault"].ok is False
+    assert wrong["PaperFlow Skill"].ok is False
+    assert wrong["Obsidian"].ok is False
+    assert wrong["Zotero"].ok is False
+
+    correct = _by_name(
+        doctor.run_checks(
+            config_path=config_path,
+            vault_path=vault_dir,
+            skill_path=skill_file,
+            which=lambda _command: None,
+            path_exists=lambda path: path in existing,
+            path_is_file=lambda path: path
+            in {config_path, skill_file, obsidian_path, zotero_path},
+            path_is_dir=lambda path: path == vault_dir,
+            environ={"LOCALAPPDATA": str(local_app_data)},
+            python_version=(3, 11, 0),
+        )
+    )
+
+    assert correct["Configuration"].ok is True
+    assert correct["Vault"].ok is True
+    assert correct["PaperFlow Skill"].ok is True
+    assert correct["Obsidian"].ok is True
+    assert correct["Zotero"].ok is True
+
+
+def _make_directory_link(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_path_type_checks_follow_valid_links_and_reject_broken_ones(tmp_path):
+    doctor = _doctor()
+    target_root = tmp_path / "TargetRoot"
+    target_root.mkdir()
+    vault_target = target_root / "Vault"
+    vault_target.mkdir()
+    config_target = target_root / "config.toml"
+    _valid_config(config_target, vault_target)
+    skill_target = target_root / "SKILL.md"
+    skill_target.write_text("skill", encoding="utf-8")
+    obsidian_target = (
+        target_root / "Local" / "Programs" / "Obsidian" / "Obsidian.exe"
+    )
+    zotero_target = target_root / "Local" / "Programs" / "Zotero" / "zotero.exe"
+    obsidian_target.parent.mkdir(parents=True)
+    zotero_target.parent.mkdir(parents=True)
+    obsidian_target.write_text("app", encoding="utf-8")
+    zotero_target.write_text("app", encoding="utf-8")
+
+    linked_root = tmp_path / "LinkedRoot"
+    _make_directory_link(linked_root, target_root)
+
+    valid = _by_name(
+        doctor.run_checks(
+            config_path=linked_root / "config.toml",
+            vault_path=linked_root / "Vault",
+            skill_path=linked_root / "SKILL.md",
+            which=lambda _command: None,
+            environ={"LOCALAPPDATA": str(linked_root / "Local")},
+            python_version=(3, 11, 0),
+        )
+    )
+    assert valid["Configuration"].ok is True
+    assert valid["Vault"].ok is True
+    assert valid["PaperFlow Skill"].ok is True
+    assert valid["Obsidian"].ok is True
+    assert valid["Zotero"].ok is True
+
+    broken_target = tmp_path / "BrokenTarget"
+    broken_target.mkdir()
+    broken_root = tmp_path / "BrokenRoot"
+    _make_directory_link(broken_root, broken_target)
+    broken_target.rmdir()
+    broken = _by_name(
+        doctor.run_checks(
+            config_path=linked_root / "config.toml",
+            vault_path=broken_root / "Vault",
+            skill_path=broken_root / "SKILL.md",
+            which=lambda _command: None,
+            environ={"LOCALAPPDATA": str(broken_root / "Local")},
+            python_version=(3, 11, 0),
+        )
+    )
+    assert broken["Vault"].ok is False
+    assert broken["PaperFlow Skill"].ok is False
+    assert broken["Obsidian"].ok is False
+    assert broken["Zotero"].ok is False
 
 
 def test_invalid_config_and_missing_vault_are_fixed_and_sanitized(tmp_path):
@@ -179,6 +328,8 @@ def test_invalid_config_and_missing_vault_are_fixed_and_sanitized(tmp_path):
             skill_path=tmp_path / "missing-skill.md",
             which=lambda _command: None,
             path_exists=Path.exists,
+            path_is_file=Path.is_file,
+            path_is_dir=Path.is_dir,
             environ={},
             python_version=(3, 10, 14),
         )
@@ -212,6 +363,8 @@ def test_run_checks_is_read_only(tmp_path):
             skill_path=skill_path,
             which=lambda command: f"C:/{command}.exe",
             path_exists=Path.exists,
+            path_is_file=Path.is_file,
+            path_is_dir=Path.is_dir,
             environ={},
             python_version=(3, 12, 0),
         )
@@ -236,6 +389,8 @@ def test_default_skill_path_uses_current_agents_location():
         vault_path=Path("C:/missing-vault"),
         which=lambda _command: None,
         path_exists=lambda path: observed.append(str(path)) or False,
+        path_is_file=lambda _path: False,
+        path_is_dir=lambda _path: False,
         environ={"USERPROFILE": "C:/Users/researcher"},
         python_version=(3, 11, 0),
     )
