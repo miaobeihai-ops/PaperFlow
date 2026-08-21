@@ -131,13 +131,37 @@ def test_fetch_hf_uses_one_request(fetcher, expected_url, expected_source):
 
     def handler(request):
         calls.append(str(request.url))
-        return httpx.Response(200, json=[{"paper": {"id": "2608.12345"}}])
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "paper": {
+                        "id": "2608.12345",
+                        "publishedAt": "2026-08-20T01:00:00Z",
+                    }
+                }
+            ],
+        )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         papers = fetcher(client, date(2026, 8, 20))
 
     assert calls == [expected_url]
     assert papers[0].sources == (expected_source,)
+
+
+def test_fetch_hf_trending_filters_payload_to_target_publication_date():
+    payload = [
+        {"paper": {"id": "2608.12345", "publishedAt": "2026-08-20T01:00:00Z"}},
+        {"paper": {"id": "2608.12346", "publishedAt": "2026-08-19T23:00:00Z"}},
+    ]
+
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=payload))
+    ) as client:
+        papers = fetch_hf_trending(client, date(2026, 8, 20))
+
+    assert [paper.arxiv_id for paper in papers] == ["2608.12345"]
 
 
 def test_parse_arxiv_fixture():
@@ -260,13 +284,31 @@ def test_fetch_arxiv_uses_one_batched_category_request():
     assert len(calls) == 1
     query = parse_qs(urlparse(str(calls[0])).query)
     assert query == {
-        "search_query": ["cat:cs.RO OR cat:cs.AI"],
+        "search_query": [
+            "(cat:cs.RO OR cat:cs.AI) AND "
+            "submittedDate:[202608200000 TO 202608202359]"
+        ],
         "start": ["0"],
         "max_results": ["100"],
         "sortBy": ["submittedDate"],
         "sortOrder": ["descending"],
     }
     assert papers[0].arxiv_id == "2608.12345"
+
+
+def test_fetch_arxiv_defensively_filters_results_to_target_publication_date():
+    xml = (FIXTURES / "arxiv_feed.xml").read_text(encoding="utf-8").replace(
+        "2026-08-20T02:00:00Z", "2026-08-19T02:00:00Z"
+    )
+
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, text=xml)
+        )
+    ) as client:
+        papers = fetch_arxiv(client, date(2026, 8, 20), ("cs.RO",))
+
+    assert papers == []
 
 
 def test_search_arxiv_uses_one_encoded_request_without_parameter_injection():

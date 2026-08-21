@@ -16,6 +16,7 @@ from paperflow.report import render_daily_markdown
 
 
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+_GENERATED_AT_LINE = re.compile(r"^generated_at: .+$", re.MULTILINE)
 
 
 class AllSourcesFailed(RuntimeError):
@@ -41,6 +42,25 @@ def _failure_message(exc: Exception) -> str:
     if isinstance(exc, httpx.NetworkError):
         return "network error"
     return type(exc).__name__
+
+
+def _reuse_idempotent_report_content(
+    config: PaperFlowConfig,
+    target_date: str,
+    content: str,
+) -> str:
+    if config.vault_path is None:
+        return content
+    target = config.vault_path / "PaperFlow" / "Reports" / f"{target_date}.md"
+    try:
+        existing = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return content
+    if _GENERATED_AT_LINE.sub("generated_at:", existing) == _GENERATED_AT_LINE.sub(
+        "generated_at:", content
+    ):
+        return existing
+    return content
 
 
 def run_daily(
@@ -77,7 +97,11 @@ def run_daily(
 
     unique_papers = deduplicate(papers)
     if write_report:
-        history = recent_arxiv_ids(config.vault_path, limit=config.history_reports)
+        history = recent_arxiv_ids(
+            config.vault_path,
+            limit=config.history_reports,
+            exclude_date=target_date,
+        )
         unique_papers = [
             paper for paper in unique_papers if paper.arxiv_id not in history
         ]
@@ -89,5 +113,6 @@ def run_daily(
     report_path = None
     if write_report:
         content = render_daily_markdown(target_date, ranked, failures)
+        content = _reuse_idempotent_report_content(config, target_date, content)
         report_path = write_daily_report(config.vault_path, target_date, content)
     return DailyResult(target_date, tuple(ranked), tuple(failures), report_path)

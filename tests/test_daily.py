@@ -117,6 +117,27 @@ def test_daily_excludes_history_only_when_writing_locally(config, monkeypatch):
     assert local.report_path.is_file()
 
 
+def test_daily_same_date_rerun_keeps_papers_and_report_content_idempotent(
+    config, monkeypatch
+):
+    monkeypatch.setattr(
+        "paperflow.daily.fetch_hf_daily", lambda *_: [sample("hf-daily")]
+    )
+    monkeypatch.setattr("paperflow.daily.fetch_hf_trending", lambda *_: [])
+    monkeypatch.setattr("paperflow.daily.fetch_arxiv", lambda *_: [])
+
+    first = run_daily(config, "2026-08-20", write_report=True)
+    first_content = first.report_path.read_text(encoding="utf-8")
+    second = run_daily(config, "2026-08-20", write_report=True)
+    second_content = second.report_path.read_text(encoding="utf-8")
+
+    assert [item.paper.arxiv_id for item in first.papers] == ["2608.12345"]
+    assert second.papers == first.papers
+    assert second.report_path == first.report_path
+    assert "2608.12345" in second_content
+    assert second_content == first_content
+
+
 def test_daily_limits_ranked_results_to_top_n(config, monkeypatch):
     lower = replace(
         sample("arxiv"),

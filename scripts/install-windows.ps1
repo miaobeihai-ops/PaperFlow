@@ -9,7 +9,11 @@ $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $VenvDir = Join-Path $ProjectRoot '.venv'
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
-$VenvPaperFlow = Join-Path $VenvDir 'Scripts\paperflow.exe'
+$VenvPaperFlowExe = Join-Path $VenvDir 'Scripts\paperflow.exe'
+$VenvPaperFlowCmd = Join-Path $VenvDir 'Scripts\paperflow.cmd'
+$VenvPaperFlow = $VenvPaperFlowExe
+$VenvPaperFlowDoctor = $VenvPaperFlowExe
+$RequirementsLock = Join-Path $ProjectRoot 'requirements.lock'
 $PaperFlowHome = Join-Path $env:LOCALAPPDATA 'PaperFlow'
 $BinDir = Join-Path $PaperFlowHome 'bin'
 $WrapperPath = Join-Path $BinDir 'paperflow.cmd'
@@ -363,10 +367,21 @@ if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
 }
 
 if ((Test-Path -LiteralPath $VenvPython -PathType Leaf) -and $PSCmdlet.ShouldProcess($ProjectRoot, 'Install PaperFlow into the virtual environment')) {
-    & $VenvPython -m pip install $ProjectRoot
+    & $VenvPython -m pip install --requirement $RequirementsLock
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Locked runtime dependency installation failed.'
+    }
+    & $VenvPython -m pip install --no-deps $ProjectRoot
     if ($LASTEXITCODE -ne 0) {
         throw 'PaperFlow package installation failed.'
     }
+}
+
+if (Test-Path -LiteralPath $VenvPaperFlowCmd -PathType Leaf) {
+    $VenvPaperFlowDoctor = $VenvPaperFlowCmd
+}
+else {
+    $VenvPaperFlowDoctor = $VenvPaperFlowExe
 }
 
 if ($PSCmdlet.ShouldProcess($SkillTarget, 'Copy PaperFlow Skill for the current user')) {
@@ -441,6 +456,16 @@ if ($pathUpdate.Changed) {
 }
 else {
     Write-Host 'PaperFlow bin directory is already present in the user PATH.'
+}
+
+if (-not $WhatIfPreference -and
+    (Test-Path -LiteralPath $WrapperPath -PathType Leaf) -and
+    (Test-Path -LiteralPath $VenvPaperFlowDoctor -PathType Leaf)) {
+    & $VenvPaperFlowDoctor --json doctor
+    $doctorExitCode = $LASTEXITCODE
+    if ($doctorExitCode -ne 0) {
+        Write-Warning "PaperFlow doctor exited with code $doctorExitCode. Review the doctor JSON output and resolve any required checks; optional Zotero, Obsidian, or missing Vault checks do not roll back the completed installation."
+    }
 }
 
 Write-Host 'PaperFlow installation steps completed.'

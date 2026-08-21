@@ -60,6 +60,9 @@ def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, 
         "[project]\nname = \"paperflow\"\nversion = \"0.1.0\"\n",
         encoding="utf-8",
     )
+    (project / "requirements.lock").write_text(
+        "httpx==0.28.1\n", encoding="utf-8"
+    )
     (skill_source / "SKILL.md").write_text("current skill\n", encoding="utf-8")
 
     fake_bin = tmp_path / "fake-bin"
@@ -69,8 +72,23 @@ def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, 
     source_python = Path(sys.executable)
     (fake_modules / "pip.py").write_text(
         "from pathlib import Path\n"
+        "import json\n"
+        "import os\n"
         "import sys\n"
-        "Path(sys.executable).with_name('paperflow.exe').write_text('fake paperflow', encoding='utf-8')\n",
+        "if os.environ.get('PAPERFLOW_PIP_LOG'):\n"
+        "    with Path(os.environ['PAPERFLOW_PIP_LOG']).open('a', encoding='utf-8') as stream:\n"
+        "        stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if os.environ.get('PAPERFLOW_PIP_FAIL_LOCK') and '--requirement' in sys.argv:\n"
+        "    raise SystemExit(8)\n"
+        "if os.environ.get('PAPERFLOW_PIP_FAIL_PROJECT') and '--no-deps' in sys.argv:\n"
+        "    raise SystemExit(9)\n"
+        "Path(sys.executable).with_name('paperflow.exe').write_text('fake paperflow', encoding='utf-8')\n"
+        "command = Path(sys.executable).with_name('paperflow.cmd')\n"
+        "command.write_text('@echo off\\r\\n"
+        "if defined PAPERFLOW_DOCTOR_LOG echo %*>>\"%PAPERFLOW_DOCTOR_LOG%\"\\r\\n"
+        "echo {\"ok\":true}\\r\\n"
+        "if defined PAPERFLOW_DOCTOR_EXIT exit /b %PAPERFLOW_DOCTOR_EXIT%\\r\\n"
+        "exit /b 0\\r\\n', encoding='utf-8')\n",
         encoding="utf-8",
     )
     py_body = (
@@ -697,6 +715,126 @@ def test_formal_install_writes_expected_files_cleans_skill_and_is_idempotent(tmp
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_formal_install_consumes_runtime_lock_then_installs_project_without_deps(
+    tmp_path,
+):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    pip_log = tmp_path / "pip.log"
+    setup["env"] = {**dict(setup["env"]), "PAPERFLOW_PIP_LOG": str(pip_log)}
+
+    result = _run_isolated(setup)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = [json.loads(line) for line in pip_log.read_text(encoding="utf-8").splitlines()]
+    assert calls == [
+        [
+            "install",
+            "--requirement",
+            str(Path(setup["project"]) / "requirements.lock"),
+        ],
+        ["install", "--no-deps", str(Path(setup["project"]))],
+    ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize(
+    ("failure_flag", "expected_message"),
+    [
+        ("PAPERFLOW_PIP_FAIL_LOCK", "Locked runtime dependency installation failed"),
+        ("PAPERFLOW_PIP_FAIL_PROJECT", "PaperFlow package installation failed"),
+    ],
+)
+def test_each_locked_install_step_checks_failure_and_stops_before_doctor(
+    tmp_path, failure_flag, expected_message
+):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    doctor_log = tmp_path / "doctor.log"
+    setup["env"] = {
+        **dict(setup["env"]),
+        failure_flag: "1",
+        "PAPERFLOW_DOCTOR_LOG": str(doctor_log),
+    }
+
+    result = _run_isolated(setup)
+
+    assert result.returncode != 0
+    assert expected_message in result.stderr
+    assert not doctor_log.exists()
+
+
+def _enable_fake_doctor(
+    setup: dict[str, object], log_path: Path, *, exit_code: int = 0
+) -> None:
+    setup["env"] = {
+        **dict(setup["env"]),
+        "PAPERFLOW_DOCTOR_LOG": str(log_path),
+        "PAPERFLOW_DOCTOR_EXIT": str(exit_code),
+    }
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_formal_install_runs_read_only_doctor_after_wrapper_creation(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    doctor_log = tmp_path / "doctor.log"
+    _enable_fake_doctor(setup, doctor_log)
+
+    result = _run_isolated(setup, "-VaultPath", str(setup["vault"]))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert doctor_log.read_text(encoding="utf-8").splitlines() == ["--json doctor"]
+    assert (Path(setup["local_appdata"]) / "PaperFlow" / "bin" / "paperflow.cmd").is_file()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_nonzero_doctor_warns_with_real_exit_code_without_failing_install(tmp_path):
+    setup = _isolated_installer(tmp_path, ("git", "codex"))
+    doctor_log = tmp_path / "doctor.log"
+    _enable_fake_doctor(setup, doctor_log, exit_code=7)
+
+    result = _run_isolated(setup)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert doctor_log.read_text(encoding="utf-8").splitlines() == ["--json doctor"]
+    assert "doctor exited with code 7" in result.stdout
+    assert "Review the doctor JSON output" in result.stdout
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize("mode", ["check-only", "what-if", "install-failure"])
+def test_non_installing_or_failed_paths_do_not_run_doctor(tmp_path, mode):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    doctor_log = tmp_path / "doctor.log"
+    _enable_fake_doctor(setup, doctor_log)
+    arguments: tuple[str, ...]
+    if mode == "check-only":
+        arguments = ("-CheckOnly",)
+    elif mode == "what-if":
+        arguments = ("-WhatIf",)
+    else:
+        setup["env"] = {
+            **dict(setup["env"]),
+            "PAPERFLOW_PIP_FAIL_PROJECT": "1",
+        }
+        arguments = ()
+
+    result = _run_isolated(setup, *arguments)
+
+    if mode == "install-failure":
+        assert result.returncode != 0
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+    assert not doctor_log.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
 def test_config_replacement_failure_leaves_no_partial_file_or_temp(tmp_path):
     setup = _isolated_installer(
         tmp_path, ("git", "codex", "zotero", "obsidian")
@@ -792,7 +930,9 @@ def test_ci_is_least_privilege_and_pinned_for_windows_and_linux():
     assert "permissions:\n  contents: read" in text
     assert "os: [windows-latest, ubuntu-latest]" in text
     assert "python-version: \"3.11\"" in text
-    assert 'python -m pip install -e ".[dev]"' in text
+    assert "python -m pip install -r requirements-dev.lock" in text
+    assert "python -m pip install --no-deps -e ." in text
+    assert 'python -m pip install -e ".[dev]"' not in text
     assert "python -m pytest -v" in text
     assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in text
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in text
@@ -859,6 +999,20 @@ def test_readme_has_three_secret_names_and_valid_compact_cloud_json():
     assert cloud_config["keywords"]
     assert cloud_config["mail_to"] == "you@example.com"
     assert "vault_path" not in cloud_config
+
+
+def test_readme_documents_locked_installs_date_semantics_and_post_install_doctor():
+    text = _read("README.md")
+
+    assert "requirements.lock" in text
+    assert "requirements-dev.lock" in text
+    assert "--date 2026-08-20" in text
+    assert "三个来源都按论文发布日期" in text
+    assert "旧日期可能为空" in text
+    assert "源的保留范围" in text
+    assert "安装末尾" in text
+    assert "只读 `paperflow --json doctor`" in text
+    assert "warning" in text.casefold()
 
 
 def test_notice_and_license_have_required_release_attribution():

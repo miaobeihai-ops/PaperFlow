@@ -164,7 +164,7 @@ def test_runtime_dependencies_include_windows_tzdata_contract():
     with (PROJECT_ROOT / "pyproject.toml").open("rb") as handle:
         dependencies = tomllib.load(handle)["project"]["dependencies"]
 
-    assert 'tzdata>=2025.2; sys_platform == "win32"' in dependencies
+    assert 'tzdata==2026.3; sys_platform == "win32"' in dependencies
 
 
 @pytest.mark.parametrize(

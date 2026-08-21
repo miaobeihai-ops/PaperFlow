@@ -80,8 +80,12 @@ def fetch_arxiv(
     target_date: date,
     categories: tuple[str, ...],
 ) -> list[Paper]:
-    del target_date
-    search_query = " OR ".join(f"cat:{category}" for category in categories)
+    category_query = " OR ".join(f"cat:{category}" for category in categories)
+    date_token = target_date.strftime("%Y%m%d")
+    search_query = (
+        f"({category_query}) AND "
+        f"submittedDate:[{date_token}0000 TO {date_token}2359]"
+    )
     query = urllib.parse.urlencode(
         {
             "search_query": search_query,
@@ -92,7 +96,9 @@ def fetch_arxiv(
         }
     )
     url = f"https://export.arxiv.org/api/query?{query}"
-    return parse_arxiv_feed(request_with_retry(client, url).text)
+    papers = parse_arxiv_feed(request_with_retry(client, url).text)
+    expected_date = target_date.isoformat()
+    return [paper for paper in papers if paper.published == expected_date]
 
 
 def _validate_max_results(max_results: int) -> None:

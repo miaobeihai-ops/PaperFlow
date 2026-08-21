@@ -53,7 +53,12 @@ def write_daily_report(vault_path: Path, report_date: str, content: str) -> Path
     return target
 
 
-def recent_arxiv_ids(vault_path: Path, limit: int) -> set[str]:
+def recent_arxiv_ids(
+    vault_path: Path,
+    limit: int,
+    *,
+    exclude_date: str | None = None,
+) -> set[str]:
     if limit < 0:
         raise ValueError("limit must not be negative")
     if limit == 0:
@@ -62,8 +67,13 @@ def recent_arxiv_ids(vault_path: Path, limit: int) -> set[str]:
     if not reports.is_dir():
         return set()
 
+    excluded_name = f"{exclude_date}.md" if exclude_date is not None else None
     report_paths = sorted(
-        (path for path in reports.iterdir() if _valid_report_name(path)),
+        (
+            path
+            for path in reports.iterdir()
+            if _valid_report_name(path) and path.name != excluded_name
+        ),
         key=lambda path: path.name,
         reverse=True,
     )[:limit]

@@ -25,8 +25,9 @@ def test_daily_email_workflow_contract():
     assert re.search(r"uses:\s+actions/[^@\s]+@v\d+(?:\s|$)", content) is None
     assert 'python-version: "3.11"' in content
     assert "cache: pip" in content
-    assert "run: python -m pip install ." in content
-    assert "run: pip install ." not in content
+    assert "run: python -m pip install -r requirements.lock" in content
+    assert "run: python -m pip install --no-deps ." in content
+    assert "run: python -m pip install ." not in content
     assert "run: paperflow --json daily --email --no-write" in content
     assert "PAPERFLOW_GMAIL_ADDRESS: ${{ secrets.PAPERFLOW_GMAIL_ADDRESS }}" in content
     assert (

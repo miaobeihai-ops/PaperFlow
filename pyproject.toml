@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=75,<76"]
+requires = ["setuptools==75.8.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,12 +8,12 @@ version = "0.1.0"
 description = "Database-free daily paper discovery for Codex, Zotero, and Obsidian"
 requires-python = ">=3.11"
 dependencies = [
-    "httpx>=0.27,<0.29",
-    'tzdata>=2025.2; sys_platform == "win32"',
+    "httpx==0.28.1",
+    'tzdata==2026.3; sys_platform == "win32"',
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3,<9"]
+dev = ["pytest==8.4.2"]
 
 [project.scripts]
 paperflow = "paperflow.cli:console_main"

@@ -83,6 +83,7 @@ def fetch_hf_daily(client: httpx.Client, target_date: date) -> list[Paper]:
 
 
 def fetch_hf_trending(client: httpx.Client, target_date: date) -> list[Paper]:
-    del target_date
     url = "https://huggingface.co/api/daily_papers?sort=trending&limit=50"
-    return parse_hf_payload(request_with_retry(client, url).text, "hf-trending")
+    papers = parse_hf_payload(request_with_retry(client, url).text, "hf-trending")
+    expected_date = target_date.isoformat()
+    return [paper for paper in papers if paper.published == expected_date]

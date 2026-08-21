@@ -36,6 +36,8 @@ Set-Location .\paperflow
 .\scripts\install-windows.ps1 -VaultPath "D:\ObsidianVault"
 ```
 
+安装器先按 `requirements.lock` 安装精确锁定的运行时依赖，再以 `--no-deps` 安装 PaperFlow 本身。安装末尾会直接运行只读 `paperflow --json doctor`；如果出现 warning，请按其 JSON 输出处理 required 检查。可选的 Zotero、Obsidian，或未提供 Vault 所产生的 doctor 非零结果不会回滚已经成功的安装。
+
 若希望安装器通过 winget 补齐 Git、Python、Zotero 或 Obsidian，显式添加 `-InstallMissing`。每项安装仍受 PowerShell `ShouldProcess` 控制；不加此参数就绝不安装软件。
 
 ```powershell
@@ -72,12 +74,15 @@ robotics = 5
 
 ```powershell
 paperflow --json daily
+paperflow --json daily --date 2026-08-20
 paperflow --json search "robotics"
 paperflow --json note 2401.01234
 paperflow --json doctor
 ```
 
 `daily` 默认原子写入或更新 `PaperFlow\Reports\YYYY-MM-DD.md`；`search` 同时查本地历史和 arXiv；`note` 写入单篇笔记，已有文件时不会覆盖；`doctor` 只读检查环境。云端邮件使用：
+
+`daily --date YYYY-MM-DD` 对 Hugging Face Daily、Hugging Face Trending 和 arXiv 三个来源都按论文发布日期筛选。旧日期可能为空，也可能受上游源的保留范围限制；命令不会为每篇论文额外发起请求。
 
 ```text
 paperflow --json daily --email --no-write
@@ -122,7 +127,7 @@ paperflow --json daily --email --no-write
 
 ## 升级与卸载
 
-升级：在仓库内执行 `git pull --ff-only`，再运行 `& .\.venv\Scripts\python.exe -m pip install .`；如 Skill 有更新，重新运行安装脚本即可幂等复制。
+升级：在仓库内执行 `git pull --ff-only`，再依次运行 `& .\.venv\Scripts\python.exe -m pip install -r requirements.lock` 和 `& .\.venv\Scripts\python.exe -m pip install --no-deps .`；如 Skill 有更新，重新运行安装脚本即可幂等复制。开发与测试环境使用包含运行时锁的 `requirements-dev.lock`。
 
 卸载时关闭相关终端，然后删除以下项目：仓库内 `.venv`、`%LOCALAPPDATA%\PaperFlow`、`%APPDATA%\PaperFlow`、`%USERPROFILE%\.agents\skills\paperflow`。若安装时加入了 PATH，再从“用户环境变量 Path”中删除 `%LOCALAPPDATA%\PaperFlow\bin`。脚本不会自动删除 Obsidian 报告、Zotero 条目或用户数据。
 

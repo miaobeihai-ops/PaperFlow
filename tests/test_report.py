@@ -472,6 +472,23 @@ def test_recent_arxiv_ids_scans_only_latest_strict_report_names(tmp_path):
     assert recent_arxiv_ids(tmp_path, 2) == {"2608.00020", "2608.00019"}
 
 
+def test_recent_arxiv_ids_excludes_target_date_before_applying_limit(tmp_path):
+    reports = tmp_path / "PaperFlow" / "Reports"
+    reports.mkdir(parents=True)
+    for report_date, arxiv_id in (
+        ("2026-08-20", "2608.00020"),
+        ("2026-08-19", "2608.00019"),
+        ("2026-08-18", "2608.00018"),
+    ):
+        (reports / f"{report_date}.md").write_text(
+            f"- arxiv_id: `{arxiv_id}`\n", encoding="utf-8"
+        )
+
+    assert recent_arxiv_ids(
+        tmp_path, 2, exclude_date="2026-08-20"
+    ) == {"2608.00019", "2608.00018"}
+
+
 def test_recent_arxiv_ids_matches_only_stable_field_lines(tmp_path):
     reports = tmp_path / "PaperFlow" / "Reports"
     reports.mkdir(parents=True)
