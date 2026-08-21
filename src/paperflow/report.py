@@ -17,6 +17,7 @@ def _generated_at(now: datetime | None) -> str:
 def _yaml_scalar(value: str) -> str:
     escaped = []
     for character in value:
+        codepoint = ord(character)
         if character == "\\":
             escaped.append("\\\\")
         elif character == '"':
@@ -27,8 +28,12 @@ def _yaml_scalar(value: str) -> str:
             escaped.append("\\r")
         elif character == "\t":
             escaped.append("\\t")
-        elif ord(character) < 32:
-            escaped.append(f"\\u{ord(character):04x}")
+        elif (
+            codepoint < 32
+            or 0x7F <= codepoint <= 0x9F
+            or codepoint in (0x2028, 0x2029)
+        ):
+            escaped.append(f"\\u{codepoint:04x}")
         else:
             escaped.append(character)
     return f'"{"".join(escaped)}"'
@@ -180,6 +185,7 @@ def render_email_text(
         lines.extend(
             [
                 f"{index}. {_single_line(paper.title)}",
+                f"arXiv ID: {_single_line(paper.arxiv_id)}",
                 f"Authors: {', '.join(_single_line(value) for value in paper.authors)}",
                 f"Sources: {', '.join(_single_line(value) for value in paper.sources)}",
                 f"Score: {ranked.score}",

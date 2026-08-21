@@ -131,6 +131,32 @@ def test_render_daily_markdown_external_source_cannot_close_frontmatter():
     assert "\n---\nowned: true" not in yaml
 
 
+def test_render_daily_markdown_escapes_yaml_line_and_c1_controls():
+    unsafe_controls = "".join(chr(value) for value in range(0x7F, 0xA0))
+    unsafe_controls += "\u2028\u2029"
+    source = f'arxiv{unsafe_controls}\n---\ninjected: true'
+    failure = SourceFailure(
+        f"failed{unsafe_controls}\n---\nfailed_key: true",
+        f"message{unsafe_controls}\n---\nmessage_key: true",
+    )
+
+    markdown = render_daily_markdown(
+        "2026-08-20",
+        [ranked_paper(sources=(source,))],
+        [failure],
+        now=NOW,
+    )
+
+    assert markdown.count("\n---\n") == 1
+    yaml, _body = markdown.split("\n---\n", 1)
+    for character in unsafe_controls:
+        assert character not in yaml
+        assert f"\\u{ord(character):04x}" in yaml
+    assert "\ninjected: true" not in yaml
+    assert "failed_key: true" not in yaml
+    assert "message_key: true" not in yaml
+
+
 def test_render_email_html_escapes_every_external_value_and_preserves_order():
     malicious = ranked_paper(
         title="Robots < Vision",
@@ -172,6 +198,7 @@ def test_render_email_text_contains_same_information_in_plain_text():
         "Source failures:",
         "- hf-trending: timeout",
         "1. Robots < Vision",
+        "arXiv ID: 2608.12345",
         "Authors: Ada Researcher",
         "Sources: arxiv, hf-daily",
         "Score: 85",
