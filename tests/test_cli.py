@@ -9,7 +9,7 @@ import pytest
 import httpx
 
 from paperflow.config import ConfigError
-from paperflow.cli import _target_date, main
+from paperflow.cli import _public_failures, _target_date, main
 from paperflow.daily import AllSourcesFailed
 from paperflow.models import DailyResult, Paper, RankedPaper, SourceFailure
 from paperflow.notes import NoteExists
@@ -549,6 +549,130 @@ def test_daily_email_normal_smtp_failure_returns_five_and_is_sanitized(
         "error": "email delivery failed",
         "email_sent": False,
     }
+
+
+def test_public_failures_allowlists_sources_and_safe_message_categories():
+    private = "PRIVATE_FAILURE_SENTINEL"
+    failures = (
+        SourceFailure("hf-daily", "request timed out"),
+        SourceFailure("hf-trending", "network error"),
+        SourceFailure("arxiv", "HTTP 100"),
+        SourceFailure("arxiv", "HTTP 599"),
+        SourceFailure("arxiv", "RuntimeError"),
+        SourceFailure("arxiv", "_PrivateError2"),
+        SourceFailure(f"arxiv\r\nBcc: {private}", "network error"),
+        SourceFailure("hf-daily", f"network error https://private.test/{private}"),
+        SourceFailure("hf-trending", "HTTP 600"),
+        SourceFailure("arxiv", "X" * 101),
+    )
+
+    public = _public_failures(failures)
+
+    assert public == (
+        SourceFailure("hf-daily", "request timed out"),
+        SourceFailure("hf-trending", "network error"),
+        SourceFailure("arxiv", "HTTP 100"),
+        SourceFailure("arxiv", "HTTP 599"),
+        SourceFailure("arxiv", "RuntimeError"),
+        SourceFailure("arxiv", "_PrivateError2"),
+        SourceFailure("unknown", "network error"),
+        SourceFailure("hf-daily", "source request failed"),
+        SourceFailure("hf-trending", "source request failed"),
+        SourceFailure("arxiv", "source request failed"),
+    )
+    assert public is not failures
+    assert all(actual is not original for actual, original in zip(public, failures))
+    assert private not in repr(public)
+
+
+def test_daily_partial_redacts_failures_in_json_and_normal_email(
+    config, monkeypatch, capsys
+):
+    private = "PRIVATE_PARTIAL_SENTINEL"
+    monkeypatch.setenv("PAPERFLOW_GMAIL_ADDRESS", "sender@example.com")
+    monkeypatch.setenv("PAPERFLOW_GMAIL_APP_PASSWORD", f"APP_{private}")
+    monkeypatch.setenv(
+        "PAPERFLOW_PRIVATE_CONFIG_JSON", f'{{"private":"JSON_{private}"}}'
+    )
+    cloud = replace(config, vault_path=None, mail_to="reader@example.com")
+    result = daily_result(
+        failures=(
+            SourceFailure(f"hf-daily\r\nBcc: {private}", "network error"),
+            SourceFailure(
+                "arxiv", f"RuntimeError https://private.test/{private}"
+            ),
+        )
+    )
+    sent = []
+    monkeypatch.setattr("paperflow.cli.load_cloud_config", lambda _raw: cloud)
+    monkeypatch.setattr("paperflow.cli.run_daily", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(
+        "paperflow.cli.send_daily_email",
+        lambda _settings, _subject, plain, html: sent.append((plain, html)),
+    )
+
+    assert main(["--json", "daily", "--email", "--no-write"]) == 0
+
+    output = capsys.readouterr().out
+    assert private not in output
+    payload = json.loads(output)
+    assert payload["failures"] == [
+        {"source": "unknown", "message": "network error"},
+        {"source": "arxiv", "message": "source request failed"},
+    ]
+    assert len(sent) == 1
+    assert private not in sent[0][0]
+    assert private not in sent[0][1]
+    assert "unknown" in sent[0][0]
+    assert "source request failed" in sent[0][1]
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_daily_all_failed_redacts_json_human_and_failure_email_boundaries(
+    config, monkeypatch, capsys, json_mode
+):
+    private = "PRIVATE_ALL_FAILED_SENTINEL"
+    monkeypatch.setenv("PAPERFLOW_GMAIL_ADDRESS", "sender@example.com")
+    monkeypatch.setenv("PAPERFLOW_GMAIL_APP_PASSWORD", f"APP_{private}")
+    monkeypatch.setenv(
+        "PAPERFLOW_PRIVATE_CONFIG_JSON", f'{{"private":"JSON_{private}"}}'
+    )
+    cloud = replace(config, vault_path=None, mail_to="reader@example.com")
+    failures = (
+        SourceFailure(f"arxiv\r\nX-Private: {private}", "network error"),
+        SourceFailure("hf-daily", f"HTTP 503 https://private.test/{private}"),
+    )
+    sent = []
+    monkeypatch.setattr("paperflow.cli.load_cloud_config", lambda _raw: cloud)
+    monkeypatch.setattr(
+        "paperflow.cli.run_daily",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AllSourcesFailed(failures)),
+    )
+    monkeypatch.setattr(
+        "paperflow.cli.send_daily_email",
+        lambda _settings, _subject, plain, html: sent.append((plain, html)),
+    )
+    argv = ["daily", "--email", "--no-write", "--date", "2026-08-20"]
+    if json_mode:
+        argv.append("--json")
+
+    assert main(argv) == 3
+
+    output = capsys.readouterr().out
+    assert private not in output
+    assert len(sent) == 1
+    assert private not in sent[0][0]
+    assert private not in sent[0][1]
+    assert "unknown" in sent[0][0]
+    assert "source request failed" in sent[0][1]
+    if json_mode:
+        assert json.loads(output)["failures"] == [
+            {"source": "unknown", "message": "network error"},
+            {"source": "hf-daily", "message": "source request failed"},
+        ]
+    else:
+        assert "unknown: network error" in output
+        assert "hf-daily: source request failed" in output
 
 
 @pytest.mark.parametrize(

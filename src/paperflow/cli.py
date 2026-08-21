@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from collections.abc import Sequence
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -29,6 +30,12 @@ from paperflow.normalize import canonical_arxiv_id
 from paperflow.notes import NoteExists, paper_note_path, write_paper_note
 from paperflow.report import render_email_html, render_email_text
 from paperflow.search import search_history
+
+
+_PUBLIC_SOURCES = frozenset(("hf-daily", "hf-trending", "arxiv"))
+_PUBLIC_HTTP_FAILURE = re.compile(r"HTTP [1-5][0-9]{2}")
+_PUBLIC_EXCEPTION_FAILURE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_MAX_PUBLIC_EXCEPTION_LENGTH = 100
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -101,11 +108,41 @@ def _failure_json(failure: SourceFailure) -> dict[str, str]:
     return {"source": failure.source, "message": failure.message}
 
 
+def _public_failures(
+    failures: Sequence[SourceFailure],
+) -> tuple[SourceFailure, ...]:
+    public = []
+    for failure in failures:
+        source = (
+            failure.source
+            if isinstance(failure.source, str)
+            and failure.source in _PUBLIC_SOURCES
+            else "unknown"
+        )
+        message = failure.message
+        message_is_public = isinstance(message, str) and (
+            message in ("request timed out", "network error")
+            or _PUBLIC_HTTP_FAILURE.fullmatch(message) is not None
+            or (
+                len(message) <= _MAX_PUBLIC_EXCEPTION_LENGTH
+                and _PUBLIC_EXCEPTION_FAILURE.fullmatch(message) is not None
+            )
+        )
+        public.append(
+            SourceFailure(
+                source,
+                message if message_is_public else "source request failed",
+            )
+        )
+    return tuple(public)
+
+
 def _result_json(result: DailyResult) -> dict[str, object]:
+    public_failures = _public_failures(result.failures)
     return {
         "ok": True,
         "date": result.date,
-        "partial": bool(result.failures),
+        "partial": bool(public_failures),
         "papers": [
             {
                 "arxiv_id": item.paper.arxiv_id,
@@ -118,7 +155,7 @@ def _result_json(result: DailyResult) -> dict[str, object]:
             }
             for item in result.papers
         ],
-        "failures": [_failure_json(failure) for failure in result.failures],
+        "failures": [_failure_json(failure) for failure in public_failures],
         "report_path": str(result.report_path) if result.report_path else None,
     }
 
@@ -162,14 +199,15 @@ def _run_daily(args: argparse.Namespace) -> int:
             print(f"error: {exc}")
         return 2
     except AllSourcesFailed as exc:
+        public_failures = _public_failures(exc.failures)
         failure_email_sent = False
         if settings is not None and target_date is not None:
             try:
                 send_daily_email(
                     settings,
                     f"PaperFlow {target_date}",
-                    render_email_text(target_date, [], exc.failures),
-                    render_email_html(target_date, [], exc.failures),
+                    render_email_text(target_date, [], public_failures),
+                    render_email_html(target_date, [], public_failures),
                 )
                 failure_email_sent = True
             except Exception:
@@ -177,7 +215,7 @@ def _run_daily(args: argparse.Namespace) -> int:
         payload = {
             "ok": False,
             "error": str(exc),
-            "failures": [_failure_json(failure) for failure in exc.failures],
+            "failures": [_failure_json(failure) for failure in public_failures],
         }
         if args.email:
             payload["failure_email_sent"] = failure_email_sent
@@ -185,7 +223,7 @@ def _run_daily(args: argparse.Namespace) -> int:
             _print_json(payload)
         else:
             print(f"error: {exc}")
-            for failure in exc.failures:
+            for failure in public_failures:
                 print(f"{failure.source}: {failure.message}")
             if args.email:
                 print(
@@ -195,13 +233,14 @@ def _run_daily(args: argparse.Namespace) -> int:
                 )
         return 3
 
+    public_failures = _public_failures(result.failures)
     if settings is not None:
         try:
             send_daily_email(
                 settings,
                 f"PaperFlow {result.date}",
-                render_email_text(result.date, result.papers, result.failures),
-                render_email_html(result.date, result.papers, result.failures),
+                render_email_text(result.date, result.papers, public_failures),
+                render_email_html(result.date, result.papers, public_failures),
             )
         except Exception:
             payload = {

@@ -17,7 +17,8 @@ def test_daily_email_workflow_contract():
     assert "uses: actions/setup-python@v5" in content
     assert 'python-version: "3.11"' in content
     assert "cache: pip" in content
-    assert "run: pip install ." in content
+    assert "run: python -m pip install ." in content
+    assert "run: pip install ." not in content
     assert "run: paperflow --json daily --email --no-write" in content
     assert "PAPERFLOW_GMAIL_ADDRESS: ${{ secrets.PAPERFLOW_GMAIL_ADDRESS }}" in content
     assert (

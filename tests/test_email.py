@@ -5,6 +5,16 @@ import pytest
 from paperflow.email import GmailSettings, send_daily_email
 
 
+def test_gmail_settings_repr_redacts_app_password():
+    settings = GmailSettings(
+        address="sender@example.com",
+        app_password="PRIVATE_REPR_SENTINEL",
+        mail_to="reader@example.com",
+    )
+
+    assert "PRIVATE_REPR_SENTINEL" not in repr(settings)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

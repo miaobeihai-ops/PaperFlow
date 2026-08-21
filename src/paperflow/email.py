@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import smtplib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 
 
@@ -12,7 +12,7 @@ _EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 @dataclass(frozen=True)
 class GmailSettings:
     address: str
-    app_password: str
+    app_password: str = field(repr=False)
     mail_to: str
 
     def __post_init__(self) -> None:
