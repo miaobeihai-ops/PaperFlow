@@ -21,6 +21,7 @@ def test_runtime_lock_contains_only_the_verified_exact_pins():
         "httpcore==1.0.9",
         "httpx==0.28.1",
         "idna==3.19",
+        "setuptools==75.8.2",
         "typing_extensions==4.16.0",
         'tzdata==2026.3; sys_platform == "win32"',
     ]
@@ -47,3 +48,9 @@ def test_pyproject_direct_and_build_dependencies_are_exactly_pinned():
         'tzdata==2026.3; sys_platform == "win32"',
     ]
     assert data["project"]["optional-dependencies"]["dev"] == ["pytest==8.4.2"]
+
+
+def test_version_locks_deliberately_do_not_claim_artifact_hash_locking():
+    for name in ("requirements.lock", "requirements-dev.lock"):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        assert "--hash=" not in text

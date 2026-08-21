@@ -58,6 +58,28 @@ def test_parse_hf_accepts_direct_objects_and_normalizes_text():
     assert paper.sources == ("hf-trending",)
 
 
+@pytest.mark.parametrize(
+    ("published_at", "expected"),
+    [
+        ("2026-08-20", "2026-08-20"),
+        ("2026-08-20T12:30:00Z", "2026-08-20"),
+        ("2026-08-20T23:30:00-04:00", "2026-08-21"),
+        ("2026-08-20T00:30:00+02:00", "2026-08-19"),
+        ("2026-08-20T12:30:00", "2026-08-20"),
+        (None, ""),
+        ("not-a-date", ""),
+    ],
+)
+def test_parse_hf_normalizes_published_at_to_utc_date(published_at, expected):
+    payload = json.dumps(
+        [{"paper": {"id": "2608.12345", "publishedAt": published_at}}]
+    )
+
+    paper = parse_hf_payload(payload, "hf-daily")[0]
+
+    assert paper.published == expected
+
+
 def test_parse_hf_skips_invalid_ids_and_falls_back_to_wrapper_upvotes():
     payload = json.dumps(
         [
@@ -164,6 +186,36 @@ def test_fetch_hf_trending_filters_payload_to_target_publication_date():
     assert [paper.arxiv_id for paper in papers] == ["2608.12345"]
 
 
+@pytest.mark.parametrize("fetcher", [fetch_hf_daily, fetch_hf_trending])
+def test_fetch_hf_sources_share_strict_utc_target_date_filter(fetcher):
+    payload = [
+        {"paper": {"id": "2608.10001", "publishedAt": "2026-08-20"}},
+        {
+            "paper": {
+                "id": "2608.10002",
+                "publishedAt": "2026-08-19T23:30:00-01:00",
+            }
+        },
+        {
+            "paper": {
+                "id": "2608.10003",
+                "publishedAt": "2026-08-20T00:30:00+02:00",
+            }
+        },
+        {"paper": {"id": "2608.10004"}},
+        {"paper": {"id": "2608.10005", "publishedAt": "invalid"}},
+    ]
+
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json=payload)
+        )
+    ) as client:
+        papers = fetcher(client, date(2026, 8, 20))
+
+    assert [paper.arxiv_id for paper in papers] == ["2608.10001", "2608.10002"]
+
+
 def test_parse_arxiv_fixture():
     xml = (FIXTURES / "arxiv_feed.xml").read_text(encoding="utf-8")
 
@@ -179,6 +231,34 @@ def test_parse_arxiv_fixture():
     assert papers[0].hf_upvotes == 0
     assert papers[0].url == "https://arxiv.org/abs/2608.12345"
     assert papers[0].pdf_url == "https://arxiv.org/pdf/2608.12345"
+
+
+@pytest.mark.parametrize(
+    ("published", "expected"),
+    [
+        ("2026-08-20T12:30:00Z", "2026-08-20"),
+        ("2026-08-20T23:30:00-04:00", "2026-08-21"),
+        ("2026-08-20T00:30:00+02:00", "2026-08-19"),
+        ("2026-08-20T12:30:00", "2026-08-20"),
+        ("invalid", ""),
+        (None, ""),
+    ],
+)
+def test_parse_arxiv_normalizes_published_to_utc_date(published, expected):
+    published_element = (
+        f"<published>{published}</published>" if published is not None else ""
+    )
+    xml = f'''<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>https://arxiv.org/abs/2608.12345</id>
+    {published_element}
+    <title>UTC boundary</title>
+  </entry>
+</feed>'''
+
+    paper = parse_arxiv_feed(xml)[0]
+
+    assert paper.published == expected
 
 
 def test_parse_arxiv_normalizes_continuous_whitespace():
@@ -309,6 +389,21 @@ def test_fetch_arxiv_defensively_filters_results_to_target_publication_date():
         papers = fetch_arxiv(client, date(2026, 8, 20), ("cs.RO",))
 
     assert papers == []
+
+
+def test_fetch_arxiv_filters_by_normalized_utc_date_across_offset_midnight():
+    xml = (FIXTURES / "arxiv_feed.xml").read_text(encoding="utf-8").replace(
+        "2026-08-20T02:00:00Z", "2026-08-19T23:30:00-01:00"
+    )
+
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, text=xml)
+        )
+    ) as client:
+        papers = fetch_arxiv(client, date(2026, 8, 20), ("cs.RO",))
+
+    assert [paper.arxiv_id for paper in papers] == ["2608.12345"]
 
 
 def test_search_arxiv_uses_one_encoded_request_without_parameter_injection():

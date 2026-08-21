@@ -734,7 +734,12 @@ def test_formal_install_consumes_runtime_lock_then_installs_project_without_deps
             "--requirement",
             str(Path(setup["project"]) / "requirements.lock"),
         ],
-        ["install", "--no-deps", str(Path(setup["project"]))],
+        [
+            "install",
+            "--no-deps",
+            "--no-build-isolation",
+            str(Path(setup["project"])),
+        ],
     ]
 
 
@@ -931,7 +936,8 @@ def test_ci_is_least_privilege_and_pinned_for_windows_and_linux():
     assert "os: [windows-latest, ubuntu-latest]" in text
     assert "python-version: \"3.11\"" in text
     assert "python -m pip install -r requirements-dev.lock" in text
-    assert "python -m pip install --no-deps -e ." in text
+    assert "python -m pip install --no-deps --no-build-isolation -e ." in text
+    assert "python -m pip install --no-deps -e ." not in text
     assert 'python -m pip install -e ".[dev]"' not in text
     assert "python -m pytest -v" in text
     assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in text
@@ -1013,6 +1019,11 @@ def test_readme_documents_locked_installs_date_semantics_and_post_install_doctor
     assert "安装末尾" in text
     assert "只读 `paperflow --json doctor`" in text
     assert "warning" in text.casefold()
+    assert "精确版本级可复现" in text
+    assert "固定构建环境" in text
+    assert "不包含制品哈希" in text
+    assert "不声称 hermetic" in text
+    assert "artifact-level 防篡改" in text
 
 
 def test_notice_and_license_have_required_release_attribution():

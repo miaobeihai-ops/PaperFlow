@@ -8,7 +8,7 @@ import httpx
 
 from paperflow.fetch import request_with_retry
 from paperflow.models import Paper
-from paperflow.normalize import canonical_arxiv_id
+from paperflow.normalize import canonical_arxiv_id, normalize_utc_date
 
 ATOM = "http://www.w3.org/2005/Atom"
 ARXIV = "http://arxiv.org/schemas/atom"
@@ -65,7 +65,7 @@ def parse_arxiv_feed(xml: str) -> list[Paper]:
                     if category is not None
                     else ""
                 ),
-                published=_text(entry, "published")[:10],
+                published=normalize_utc_date(_text(entry, "published")),
                 sources=("arxiv",),
                 hf_upvotes=0,
                 url=f"https://arxiv.org/abs/{arxiv_id}",

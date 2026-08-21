@@ -371,7 +371,7 @@ if ((Test-Path -LiteralPath $VenvPython -PathType Leaf) -and $PSCmdlet.ShouldPro
     if ($LASTEXITCODE -ne 0) {
         throw 'Locked runtime dependency installation failed.'
     }
-    & $VenvPython -m pip install --no-deps $ProjectRoot
+    & $VenvPython -m pip install --no-deps --no-build-isolation $ProjectRoot
     if ($LASTEXITCODE -ne 0) {
         throw 'PaperFlow package installation failed.'
     }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from datetime import date, datetime, timezone
 
 from paperflow.models import Paper
 
@@ -24,6 +25,29 @@ _METADATA_FIELDS = (
     "url",
     "pdf_url",
 )
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def normalize_utc_date(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    cleaned = value.strip()
+    if not cleaned:
+        return ""
+    if _ISO_DATE.fullmatch(cleaned):
+        try:
+            return date.fromisoformat(cleaned).isoformat()
+        except ValueError:
+            return ""
+    if cleaned.endswith("Z"):
+        cleaned = f"{cleaned[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(cleaned)
+    except (ValueError, OverflowError):
+        return ""
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).date().isoformat()
 
 
 def canonical_arxiv_id(value: str) -> str:

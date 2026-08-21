@@ -8,7 +8,7 @@ import httpx
 
 from paperflow.fetch import request_with_retry
 from paperflow.models import Paper
-from paperflow.normalize import canonical_arxiv_id
+from paperflow.normalize import canonical_arxiv_id, normalize_utc_date
 
 
 def _clean(value: object) -> str:
@@ -64,7 +64,7 @@ def parse_hf_payload(payload: str, source: str) -> list[Paper]:
                 authors=_authors(data.get("authors")),
                 abstract=_clean(data.get("summary")),
                 primary_category=_clean(data.get("primaryCategory")),
-                published=_clean(data.get("publishedAt"))[:10],
+                published=normalize_utc_date(data.get("publishedAt")),
                 sources=(source,),
                 hf_upvotes=upvotes if upvotes is not None else 0,
                 url=f"https://arxiv.org/abs/{arxiv_id}",
@@ -74,16 +74,21 @@ def parse_hf_payload(payload: str, source: str) -> list[Paper]:
     return result
 
 
+def _filter_target_date(papers: list[Paper], target_date: date) -> list[Paper]:
+    expected_date = target_date.isoformat()
+    return [paper for paper in papers if paper.published == expected_date]
+
+
 def fetch_hf_daily(client: httpx.Client, target_date: date) -> list[Paper]:
     url = (
         "https://huggingface.co/api/daily_papers"
         f"?date={target_date.isoformat()}&limit=100"
     )
-    return parse_hf_payload(request_with_retry(client, url).text, "hf-daily")
+    papers = parse_hf_payload(request_with_retry(client, url).text, "hf-daily")
+    return _filter_target_date(papers, target_date)
 
 
 def fetch_hf_trending(client: httpx.Client, target_date: date) -> list[Paper]:
     url = "https://huggingface.co/api/daily_papers?sort=trending&limit=50"
     papers = parse_hf_payload(request_with_retry(client, url).text, "hf-trending")
-    expected_date = target_date.isoformat()
-    return [paper for paper in papers if paper.published == expected_date]
+    return _filter_target_date(papers, target_date)
