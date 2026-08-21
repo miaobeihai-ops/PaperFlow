@@ -76,7 +76,12 @@ def _create_junction(powershell: str, path: Path, target: Path) -> None:
 
 
 def _install_file_backed_path_fixture(
-    powershell: str, installer: Path, path_file: Path, no_persist_file: Path
+    powershell: str,
+    installer: Path,
+    path_file: Path,
+    no_persist_file: Path,
+    behavior_file: Path,
+    setter_count_file: Path,
 ) -> None:
     command = (
         "$tokens = $null; $errors = $null; "
@@ -112,13 +117,37 @@ def _install_file_backed_path_fixture(
 
 # Isolated test fixture: all user PATH persistence is file-backed.
 function Get-PaperFlowUserPath {{
+    if (-not (Test-Path -LiteralPath {_powershell_literal(str(path_file))})) {{
+        return $null
+    }}
     return [System.IO.File]::ReadAllText({_powershell_literal(str(path_file))})
 }}
 
 function Set-PaperFlowUserPath {{
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+    param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()]$Value)
 
     if (Test-Path -LiteralPath {_powershell_literal(str(no_persist_file))}) {{
+        return
+    }}
+    $behavior = if (Test-Path -LiteralPath {_powershell_literal(str(behavior_file))}) {{
+        [System.IO.File]::ReadAllText({_powershell_literal(str(behavior_file))})
+    }} else {{ '' }}
+    if ($behavior -eq 'always-corrupt') {{
+        [System.IO.File]::WriteAllText({_powershell_literal(str(path_file))}, 'CORRUPTED')
+        return
+    }}
+    if ($behavior -eq 'corrupt-once') {{
+        $setterCount = if (Test-Path -LiteralPath {_powershell_literal(str(setter_count_file))}) {{
+            [int][System.IO.File]::ReadAllText({_powershell_literal(str(setter_count_file))})
+        }} else {{ 0 }}
+        [System.IO.File]::WriteAllText({_powershell_literal(str(setter_count_file))}, [string]($setterCount + 1))
+        if ($setterCount -eq 0) {{
+            [System.IO.File]::WriteAllText({_powershell_literal(str(path_file))}, 'CORRUPTED')
+            return
+        }}
+    }}
+    if ($null -eq $Value) {{
+        Remove-Item -LiteralPath {_powershell_literal(str(path_file))} -Force -ErrorAction SilentlyContinue
         return
     }}
     [System.IO.File]::WriteAllText({_powershell_literal(str(path_file))}, $Value)
@@ -143,9 +172,16 @@ def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, 
     shutil.copy2(PATH_HELPER, scripts / PATH_HELPER.name)
     path_file = project / "isolated-user-path.txt"
     no_persist_file = project / "isolated-user-path-no-persist"
+    behavior_file = project / "isolated-user-path-behavior"
+    setter_count_file = project / "isolated-user-path-setter-count"
     path_file.write_text("", encoding="utf-8")
     _install_file_backed_path_fixture(
-        powershell, scripts / INSTALLER.name, path_file, no_persist_file
+        powershell,
+        scripts / INSTALLER.name,
+        path_file,
+        no_persist_file,
+        behavior_file,
+        setter_count_file,
     )
     (project / "pyproject.toml").write_text(
         "[project]\nname = \"paperflow\"\nversion = \"0.1.0\"\n",
@@ -177,7 +213,6 @@ def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, 
         "    raise SystemExit(8)\n"
         "if os.environ.get('PAPERFLOW_PIP_FAIL_PROJECT') and '--no-deps' in sys.argv:\n"
         "    raise SystemExit(9)\n"
-        "Path(sys.executable).with_name('paperflow.exe').write_text('fake paperflow', encoding='utf-8')\n"
         "command = Path(sys.executable).with_name('paperflow.cmd')\n"
         "command.write_text('@echo off\\r\\n"
         "if defined PAPERFLOW_DOCTOR_LOG echo %*>>\"%PAPERFLOW_DOCTOR_LOG%\"\\r\\n"
@@ -261,6 +296,8 @@ def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, 
         "fake_bin": fake_bin,
         "user_path_file": path_file,
         "user_path_no_persist_file": no_persist_file,
+        "user_path_behavior_file": behavior_file,
+        "user_path_setter_count_file": setter_count_file,
     }
 
 
@@ -540,7 +577,7 @@ def test_check_only_resolves_data_root_without_mutation(tmp_path):
     ("value", "expected"),
     [
         (r"C:\PaperFlow Data", True),
-        (r"\\server\share\PaperFlow Data", True),
+        (r"\\server\share\PaperFlow Data", False),
         (r"C:drive-relative", False),
         (r"\root-relative", False),
         ("relative", False),
@@ -572,11 +609,13 @@ def test_atomic_config_copy_collision_preserves_target_and_cleans_temp(tmp_path)
 @pytest.mark.parametrize(
     ("kind", "expected_message"),
     [
-        ("relative", "DataRoot must be an absolute Windows path"),
-        ("drive-relative", "DataRoot must be an absolute Windows path"),
-        ("root-relative", "DataRoot must be an absolute Windows path"),
+        ("relative", "DataRoot must be a drive-absolute local path"),
+        ("drive-relative", "DataRoot must be a drive-absolute local path"),
+        ("root-relative", "DataRoot must be a drive-absolute local path"),
+        ("unc", "DataRoot must be a drive-absolute local path"),
+        ("semicolon", "DataRoot cannot contain a semicolon"),
         ("file", "DataRoot must be a normal directory"),
-        ("reparse", "DataRoot must not be a reparse point"),
+        ("reparse", "DataRoot ancestor must not be a reparse point"),
     ],
 )
 def test_invalid_data_root_is_rejected_before_mutation(
@@ -591,6 +630,10 @@ def test_invalid_data_root_is_rejected_before_mutation(
         data_root = r"C:drive-relative-data-root"
     elif kind == "root-relative":
         data_root = r"\root-relative-data-root"
+    elif kind == "unc":
+        data_root = r"\\server\share\PaperFlowData"
+    elif kind == "semicolon":
+        data_root = str(tmp_path / "PaperFlow;Data")
     elif kind == "file":
         path = tmp_path / "data-root-file"
         path.write_text("not a directory", encoding="utf-8")
@@ -625,6 +668,94 @@ def test_invalid_data_root_is_rejected_before_mutation(
     assert expected_message in result.stderr
     assert _snapshot(tmp_path) == before
     assert not (Path(setup["project"]) / ".venv").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+@pytest.mark.parametrize("mode", ["check-only", "formal"])
+@pytest.mark.parametrize("relation", ["equal", "nested", "ancestor"])
+@pytest.mark.parametrize(
+    "target_kind", ["project-root", "skill-source", "skill-target", "vault"]
+)
+def test_data_root_overlap_is_rejected_before_mutation(
+    tmp_path, target_kind, relation, mode
+):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    vault = tmp_path / "vault-container" / "Vault"
+    vault.mkdir(parents=True)
+    targets = {
+        "project-root": Path(setup["project"]),
+        "skill-source": Path(setup["project"])
+        / ".agents"
+        / "skills"
+        / "paperflow",
+        "skill-target": Path(setup["skill_target"]),
+        "vault": vault,
+    }
+    target = targets[target_kind]
+    sentinel = target / "overlap-sentinel.txt"
+    sentinel_bytes = f"preserve {target_kind} {relation}".encode("utf-8")
+    sentinel.write_bytes(sentinel_bytes)
+    if relation == "equal":
+        data_root = target
+    elif relation == "nested":
+        data_root = target / "nested-data-root"
+    else:
+        data_root = target.parent
+    before = _snapshot(tmp_path)
+    arguments = ["-DataRoot", str(data_root), "-VaultPath", str(vault)]
+    if mode == "check-only":
+        arguments.insert(0, "-CheckOnly")
+
+    result = _run_isolated(setup, *arguments)
+
+    assert result.returncode != 0
+    assert "DataRoot must not overlap" in result.stderr
+    assert sentinel.read_bytes() == sentinel_bytes
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction behavior test")
+@pytest.mark.parametrize("mode", ["check-only", "formal"])
+def test_data_root_reparse_ancestor_is_rejected_before_mutation(tmp_path, mode):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    unrelated = tmp_path / "unrelated-target"
+    unrelated.mkdir()
+    sentinel = unrelated / "sentinel.txt"
+    sentinel_bytes = b"do not follow the DataRoot ancestor junction"
+    sentinel.write_bytes(sentinel_bytes)
+    junction = tmp_path / "data-root-junction"
+    _create_junction(str(setup["powershell"]), junction, unrelated)
+    data_root = junction / "missing-tail" / "PaperFlowData"
+    before = _snapshot(tmp_path)
+    arguments = ["-DataRoot", str(data_root)]
+    if mode == "check-only":
+        arguments.insert(0, "-CheckOnly")
+
+    result = _run_isolated(setup, *arguments)
+
+    assert result.returncode != 0
+    assert "DataRoot ancestor must not be a reparse point" in result.stderr
+    assert sentinel.read_bytes() == sentinel_bytes
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_separate_sibling_data_root_is_not_a_false_overlap(tmp_path):
+    setup = _isolated_installer(tmp_path, ("git", "codex"))
+    project = Path(setup["project"])
+    data_root = project.parent / "project-data"
+
+    result = _run_isolated(
+        setup, "-CheckOnly", "-DataRoot", str(data_root), input_text=None
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_installer_uses_only_allowlisted_exact_winget_packages():
@@ -665,7 +796,9 @@ def test_user_path_backend_has_no_test_seam_and_uses_user_scope_only():
     assert ". (Join-Path $PSScriptRoot 'install-windows-path.ps1')" in text
     path_flow = text[text.index("$userPath = Get-PaperFlowUserPath") :]
     should_process = path_flow.index("$PSCmdlet.ShouldProcess('User PATH'")
-    write_call = path_flow.index("Set-PaperFlowUserPath -Value $pathUpdate.Value")
+    write_call = path_flow.index(
+        "Set-PaperFlowUserPathTransaction -IntendedValue $pathUpdate.Value"
+    )
     assert should_process < write_call
 
 
@@ -1134,10 +1267,10 @@ def test_formal_install_writes_expected_files_cleans_skill_and_is_idempotent(tmp
     assert second.returncode == 0, second.stdout + second.stderr
 
     assert (project / ".venv" / "Scripts" / "python.exe").is_file()
-    assert (project / ".venv" / "Scripts" / "paperflow.exe").is_file()
+    assert (project / ".venv" / "Scripts" / "paperflow.cmd").is_file()
     assert wrapper.is_file()
     assert "%*" in wrapper.read_text(encoding="utf-8")
-    assert str(project / ".venv" / "Scripts" / "paperflow.exe") in wrapper.read_text(
+    assert str(project / ".venv" / "Scripts" / "paperflow.cmd") in wrapper.read_text(
         encoding="utf-8"
     )
     assert "preserved" in second.stdout.casefold()
@@ -1175,7 +1308,7 @@ def test_data_root_install_creates_layout_and_exact_wrapper_environment(tmp_path
         f'set "TMP={data_root.resolve() / "tmp"}"',
         f'set "TEMP={data_root.resolve() / "tmp"}"',
     ]
-    assert wrapper_lines[-3].endswith('paperflow.exe" %*')
+    assert wrapper_lines[-3].endswith('paperflow.cmd" %*')
     assert wrapper_lines[-2:] == [
         'set "PAPERFLOW_EXIT_CODE=%ERRORLEVEL%"',
         "endlocal & exit /b %PAPERFLOW_EXIT_CODE%",
@@ -1204,9 +1337,11 @@ def test_data_root_wrapper_isolates_environment_special_paths_and_exit_code(tmp_
     generated_wrapper = data_root / "bin" / "paperflow.cmd"
     safe_wrapper = tmp_path / "paperflow-wrapper-under-test.cmd"
     shutil.copy2(generated_wrapper, safe_wrapper)
-    target = Path(setup["project"]) / ".venv" / "Scripts" / "paperflow.exe"
-    target.unlink()
-    shutil.copy2(sys.executable, target)
+    target = Path(setup["project"]) / ".venv" / "Scripts" / "paperflow.cmd"
+    target.write_text(
+        f'@echo off\r\n"{sys.executable}" %*\r\nexit /b %ERRORLEVEL%\r\n',
+        encoding="utf-8",
+    )
 
     probe_log = tmp_path / "wrapper-probe.json"
     caller_log = tmp_path / "caller-probe.json"
@@ -1527,9 +1662,15 @@ def _use_file_backed_user_path(
     return path_file
 
 
+def _set_path_persistence_behavior(setup: dict[str, object], behavior: str) -> None:
+    Path(setup["user_path_behavior_file"]).write_text(behavior, encoding="utf-8")
+    Path(setup["user_path_setter_count_file"]).unlink(missing_ok=True)
+
+
 def test_data_root_doctor_precedes_path_commit_and_legacy_cleanup():
     text = INSTALLER.read_text(encoding="utf-8")
-    doctor_position = text.index("& $VenvPaperFlowDoctor --json doctor")
+    doctor_position = text.index("& $WrapperPath --json doctor")
+    assert "& $VenvPaperFlowDoctor --json doctor" not in text
     path_position = text.index("$userPath = Get-PaperFlowUserPath", doctor_position)
     cleanup_position = text.rindex("Remove-LegacyPaperFlowFiles")
 
@@ -1593,6 +1734,33 @@ def test_successful_data_root_migrates_config_wrapper_path_and_preserves_neighbo
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_successful_path_migration_preserves_conflicting_legacy_config(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    new_config = data_root / "config" / "config.toml"
+    new_config.parent.mkdir(parents=True)
+    new_bytes = b'vault_path = "D:\\\\NewVault"\nnew = true\n'
+    new_config.write_bytes(new_bytes)
+    legacy_wrapper, legacy_config, _, legacy_bytes = _write_legacy_install(setup)
+    initial_path = rf"C:\Other;{legacy_wrapper.parent}"
+    path_file = _use_file_backed_user_path(setup, initial_path)
+
+    result = _run_isolated(
+        setup, "-DataRoot", str(data_root), input_text="y\n"
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert new_config.read_bytes() == new_bytes
+    assert legacy_config.read_bytes() == legacy_bytes
+    assert not legacy_wrapper.exists()
+    assert path_file.read_text(encoding="utf-8") == rf"C:\Other;{data_root}\bin"
+    assert "manual reconciliation" in result.stdout.casefold()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
 def test_data_root_doctor_failure_preserves_exact_legacy_files_and_path(tmp_path):
     setup = _isolated_installer(tmp_path, ("git", "codex"))
     _preprovision_fake_venv(setup)
@@ -1616,6 +1784,43 @@ def test_data_root_doctor_failure_preserves_exact_legacy_files_and_path(tmp_path
     assert legacy_wrapper.read_bytes() == wrapper_bytes
     assert legacy_config.read_bytes() == config_bytes
     assert current_path == initial_path
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_broken_new_wrapper_prevents_path_commit_and_preserves_legacy(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    wrapper_path = data_root / "bin" / "paperflow.cmd"
+    legacy_wrapper, legacy_config, wrapper_bytes, config_bytes = _write_legacy_install(
+        setup
+    )
+    initial_path = rf"C:\Other;{legacy_wrapper.parent}"
+    path_file = _use_file_backed_user_path(setup, initial_path)
+    wrapper_literal = _powershell_literal(str(wrapper_path))
+    prologue = (
+        f"$paperflowTestWrapper = {wrapper_literal}; "
+        "function Move-Item { param([string]$LiteralPath, [string]$Destination, [switch]$Force); "
+        "Microsoft.PowerShell.Management\\Move-Item @PSBoundParameters; "
+        "if ([System.StringComparer]::OrdinalIgnoreCase.Equals($Destination, $paperflowTestWrapper)) "
+        "{ [System.IO.File]::WriteAllText($Destination, \"@echo off`r`nexit /b 91`r`n\") } }; "
+    )
+
+    result = _run_dot_sourced_installer(
+        setup,
+        "-DataRoot",
+        str(data_root),
+        prologue=prologue,
+        input_text="y\n",
+    )
+
+    assert result.returncode != 0
+    assert "PaperFlow doctor exited with code 91" in result.stderr
+    assert path_file.read_text(encoding="utf-8") == initial_path
+    assert legacy_wrapper.read_bytes() == wrapper_bytes
+    assert legacy_config.read_bytes() == config_bytes
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
@@ -1664,6 +1869,81 @@ def test_data_root_path_persistence_mismatch_preserves_exact_legacy_files(tmp_pa
     assert result.returncode != 0
     assert "User PATH did not persist the intended PaperFlow migration" in result.stderr
     assert path_file.read_text(encoding="utf-8") == initial_path
+    assert legacy_wrapper.read_bytes() == wrapper_bytes
+    assert legacy_config.read_bytes() == config_bytes
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_corrupted_path_write_is_rolled_back_exactly_before_failure(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    legacy_wrapper, legacy_config, wrapper_bytes, config_bytes = _write_legacy_install(
+        setup
+    )
+    initial_path = rf"C:\Exact Before;;{legacy_wrapper.parent};"
+    path_file = _use_file_backed_user_path(setup, initial_path)
+    _set_path_persistence_behavior(setup, "corrupt-once")
+
+    result = _run_isolated(
+        setup, "-DataRoot", str(data_root), input_text="y\n"
+    )
+
+    assert result.returncode != 0
+    assert "original user PATH was restored" in result.stderr
+    assert path_file.read_text(encoding="utf-8") == initial_path
+    assert legacy_wrapper.read_bytes() == wrapper_bytes
+    assert legacy_config.read_bytes() == config_bytes
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_path_rollback_failure_requires_manual_repair_and_preserves_legacy(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    legacy_wrapper, legacy_config, wrapper_bytes, config_bytes = _write_legacy_install(
+        setup
+    )
+    initial_path = rf"C:\Exact Before;{legacy_wrapper.parent}"
+    path_file = _use_file_backed_user_path(setup, initial_path)
+    _set_path_persistence_behavior(setup, "always-corrupt")
+
+    result = _run_isolated(
+        setup, "-DataRoot", str(data_root), input_text="y\n"
+    )
+
+    assert result.returncode != 0
+    assert "manual PATH repair is required" in result.stderr
+    assert path_file.read_text(encoding="utf-8") == "CORRUPTED"
+    assert legacy_wrapper.read_bytes() == wrapper_bytes
+    assert legacy_config.read_bytes() == config_bytes
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_path_rollback_restores_an_originally_missing_user_path(tmp_path):
+    setup = _isolated_installer(
+        tmp_path, ("git", "codex", "zotero", "obsidian")
+    )
+    _preprovision_fake_venv(setup)
+    data_root = tmp_path / "PaperFlow Data"
+    legacy_wrapper, legacy_config, wrapper_bytes, config_bytes = _write_legacy_install(
+        setup
+    )
+    path_file = Path(setup["user_path_file"])
+    path_file.unlink()
+    _set_path_persistence_behavior(setup, "corrupt-once")
+
+    result = _run_isolated(
+        setup, "-DataRoot", str(data_root), input_text="y\n"
+    )
+
+    assert result.returncode != 0
+    assert "original user PATH was restored" in result.stderr
+    assert not path_file.exists()
     assert legacy_wrapper.read_bytes() == wrapper_bytes
     assert legacy_config.read_bytes() == config_bytes
 
@@ -2013,9 +2293,18 @@ def test_readme_documents_existing_vault_and_safe_legacy_migration():
     assert "包括配置复制、wrapper 创建、doctor、PATH 持久化或写入后读回核对" in install
     assert "都不会删除精确的旧版 wrapper/config" in install
     assert "拒绝 PATH 迁移也会保留它们" in install
-    assert "只清理旧位置中精确匹配的 wrapper 和 config.toml" in install
+    assert "只清理旧位置中精确匹配的 wrapper" in install
+    assert "仅在本次安装已将其逐字节迁移到新位置时清理" in install
     assert r"%LOCALAPPDATA%\PaperFlow\bin\paperflow.cmd" in install
     assert r"%APPDATA%\PaperFlow\config.toml" in install
+    assert "同时保留新旧 config.toml" in install
+    assert "manual reconciliation" in install
+    assert "drive-absolute local path" in install
+    assert "不支持 UNC" in install
+    assert "不能包含分号" in install
+    assert "不得与项目目录" in install
+    assert "paperflow.cmd --json doctor" in install
+    assert "回滚并读回验证" in install
     assert "未知相邻文件始终保留" in install
     assert 'vault_path = "D:\\\\ObsidianVault"' in config
     assert "TOML 不会展开环境变量" in config
@@ -2118,7 +2407,7 @@ def test_readme_documents_locked_installs_date_semantics_and_post_install_doctor
     assert "旧日期可能为空" in text
     assert "源的保留范围" in text
     assert "安装末尾" in text
-    assert "只读 `paperflow --json doctor`" in text
+    assert "`paperflow.cmd --json doctor` 运行只读诊断" in text
     assert "warning" in text.casefold()
     assert "精确版本级可复现" in text
     assert "固定构建环境" in text

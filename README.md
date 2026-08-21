@@ -38,6 +38,8 @@ PowerShell 会把 `$env:USERPROFILE\Documents\Obsidian Vault` 按当前用户分
 .\scripts\install-windows.ps1 -DataRoot "D:\PaperFlowData" -VaultPath "$env:USERPROFILE\Documents\Obsidian Vault"
 ```
 
+`-DataRoot` 必须是带盘符和根分隔符的本地绝对路径（drive-absolute local path，例如 `D:\PaperFlowData`），不支持 UNC、盘符相对路径或根相对路径，也不能包含分号。数据根目录及其现有祖先不能是重解析点；它不得与项目目录（包括 `.venv` 和 Skill 源）、Skill 安装目标或 Vault 构成相同、父级或子级重叠关系。`D:\PaperFlowData` 与独立的 `D:\PaperFlow` 属于边界清晰的相邻目录，可以使用。
+
 安装后的职责边界如下：
 
 - 源码仍在所选项目目录 `D:\PaperFlow`，虚拟环境仍在 `D:\PaperFlow\.venv`；`-DataRoot` 不移动源码或虚拟环境。
@@ -45,11 +47,11 @@ PowerShell 会把 `$env:USERPROFILE\Documents\Obsidian Vault` 按当前用户分
 - 小型 Codex Skill 仍安装到 `%USERPROFILE%\.agents\skills\paperflow`，不放进数据根目录。
 - wrapper 为每次 PaperFlow 命令设置 `PAPERFLOW_HOME`、缓存目录和临时目录。`PAPERFLOW_HOME` 是 PaperFlow 专用环境变量，不会全局迁移其他程序的数据。
 
-安装器先按 `requirements.lock` 安装精确锁定的运行时与 setuptools 构建依赖，再以 `--no-deps --no-build-isolation` 安装 PaperFlow 本身，从而固定构建环境。使用 `-DataRoot` 时，这两个 pip 子进程临时使用 `PIP_NO_CACHE_DIR=1`，并把 `TEMP`、`TMP` 指向 `D:\PaperFlowData\tmp`；无论成功或失败，随后都会恢复安装进程原有的 TEMP、TMP 和 PIP_NO_CACHE_DIR。这里提供的是精确版本级可复现；为保持轻量，锁文件不包含制品哈希，不声称 hermetic 或 artifact-level 防篡改。安装末尾会直接运行只读 `paperflow --json doctor`；如果出现 warning，请按其 JSON 输出处理 required 检查。
+安装器先按 `requirements.lock` 安装精确锁定的运行时与 setuptools 构建依赖，再以 `--no-deps --no-build-isolation` 安装 PaperFlow 本身，从而固定构建环境。使用 `-DataRoot` 时，这两个 pip 子进程临时使用 `PIP_NO_CACHE_DIR=1`，并把 `TEMP`、`TMP` 指向 `D:\PaperFlowData\tmp`；无论成功或失败，随后都会恢复安装进程原有的 TEMP、TMP 和 PIP_NO_CACHE_DIR。这里提供的是精确版本级可复现；为保持轻量，锁文件不包含制品哈希，不声称 hermetic 或 artifact-level 防篡改。安装末尾会通过新生成的 `paperflow.cmd --json doctor` 运行只读诊断；如果出现 warning，请按其 JSON 输出处理 required 检查。
 
-从旧版默认位置迁移到 `-DataRoot` 时，仅在新的 DataRoot config 不存在时，安装器才会把旧 `config.toml` 逐字节复制过去；已存在的目标 config 会原样保留。安装器随后创建新 wrapper 并运行 doctor。doctor 成功后，只有满足以下任一分支才会提交迁移并清理旧文件：PATH 替换成功并经写入后读回验证，或 PATH 已经精确指向新的 bin 且经读回验证。提交后只清理旧位置中精确匹配的 wrapper 和 config.toml，即 `%LOCALAPPDATA%\PaperFlow\bin\paperflow.cmd` 与 `%APPDATA%\PaperFlow\config.toml`。
+从旧版默认位置迁移到 `-DataRoot` 时，仅在新的 DataRoot config 不存在时，安装器才会把旧 `config.toml` 逐字节复制过去；已存在的目标 config 会原样保留。如果新旧 config 同时存在，安装器会同时保留新旧 config.toml，并警告需要 manual reconciliation。安装器随后创建新 wrapper 并运行 doctor。doctor 成功后，只有满足以下任一分支才会提交迁移并清理旧文件：PATH 替换成功并经写入后读回验证，或 PATH 已经精确指向新的 bin 且经读回验证。提交后只清理旧位置中精确匹配的 wrapper，即 `%LOCALAPPDATA%\PaperFlow\bin\paperflow.cmd`；旧 `%APPDATA%\PaperFlow\config.toml` 仅在本次安装已将其逐字节迁移到新位置时清理。
 
-在迁移提交之前发生的任何失败，包括配置复制、wrapper 创建、doctor、PATH 持久化或写入后读回核对，都不会删除精确的旧版 wrapper/config；拒绝 PATH 迁移也会保留它们。未知相邻文件始终保留，安装器不会递归清空旧目录。
+在迁移提交之前发生的任何失败，包括配置复制、wrapper 创建、doctor、PATH 持久化或写入后读回核对，都不会删除精确的旧版 wrapper/config；拒绝 PATH 迁移也会保留它们。PATH 写入或核对失败时，安装器会尝试恢复原始 PATH，并回滚并读回验证；若回滚也无法核对，会明确要求手动修复 PATH。未知相邻文件始终保留，安装器不会递归清空旧目录。
 
 若希望安装器通过 winget 补齐 Git、Python、Zotero 或 Obsidian，显式添加 `-InstallMissing`。每项安装仍受 PowerShell `ShouldProcess` 控制；不加此参数就绝不安装软件。
 

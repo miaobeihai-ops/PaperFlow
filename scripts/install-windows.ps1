@@ -11,13 +11,44 @@ $ErrorActionPreference = 'Stop'
 function Test-AbsoluteWindowsPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    if ($Path -match '^[A-Za-z]:[\\/]') {
+    return $Path -match '^[A-Za-z]:[\\/]'
+}
+
+function Assert-NoReparsePointInDataRootAncestors {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $currentPath = [System.IO.Path]::GetFullPath($Path)
+    while ($null -ne $currentPath) {
+        if (Test-Path -LiteralPath $currentPath) {
+            $item = Get-Item -LiteralPath $currentPath -Force
+            $isReparsePoint = ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+            if ($isReparsePoint) {
+                throw "DataRoot ancestor must not be a reparse point: $currentPath"
+            }
+        }
+        $parent = [System.IO.Directory]::GetParent($currentPath)
+        if ($null -eq $parent) {
+            break
+        }
+        $currentPath = $parent.FullName
+    }
+}
+
+function Test-PathsOverlap {
+    param(
+        [Parameter(Mandatory = $true)][string]$First,
+        [Parameter(Mandatory = $true)][string]$Second
+    )
+
+    $firstFullPath = [System.IO.Path]::GetFullPath($First).TrimEnd('\', '/')
+    $secondFullPath = [System.IO.Path]::GetFullPath($Second).TrimEnd('\', '/')
+    if ([System.StringComparer]::OrdinalIgnoreCase.Equals($firstFullPath, $secondFullPath)) {
         return $true
     }
-    if ($Path -match '^\\\\[^\\/]+[\\/][^\\/]+(?:[\\/].*)?$') {
-        return $true
-    }
-    return $false
+    $firstPrefix = $firstFullPath + [System.IO.Path]::DirectorySeparatorChar
+    $secondPrefix = $secondFullPath + [System.IO.Path]::DirectorySeparatorChar
+    return ($firstFullPath.StartsWith($secondPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $secondFullPath.StartsWith($firstPrefix, [System.StringComparison]::OrdinalIgnoreCase))
 }
 
 $DataRootSupplied = $PSBoundParameters.ContainsKey('DataRoot')
@@ -28,8 +59,11 @@ if ($DataRootSupplied) {
     if ($DataRoot.Contains("`r") -or $DataRoot.Contains("`n")) {
         throw 'DataRoot cannot contain CR or LF characters.'
     }
+    if ($DataRoot.Contains(';')) {
+        throw 'DataRoot cannot contain a semicolon because it must remain one PATH entry.'
+    }
     if (-not (Test-AbsoluteWindowsPath -Path $DataRoot)) {
-        throw 'DataRoot must be an absolute Windows path (drive-qualified or UNC).'
+        throw 'DataRoot must be a drive-absolute local path.'
     }
     try {
         $ResolvedDataRoot = [System.IO.Path]::GetFullPath($DataRoot)
@@ -37,6 +71,7 @@ if ($DataRootSupplied) {
     catch {
         throw "DataRoot is not a valid absolute path: $($_.Exception.Message)"
     }
+    Assert-NoReparsePointInDataRootAncestors -Path $ResolvedDataRoot
     if (Test-Path -LiteralPath $ResolvedDataRoot) {
         $dataRootItem = Get-Item -LiteralPath $ResolvedDataRoot -Force
         $dataRootIsReparsePoint = ($dataRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
@@ -55,7 +90,6 @@ $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
 $VenvPaperFlowExe = Join-Path $VenvDir 'Scripts\paperflow.exe'
 $VenvPaperFlowCmd = Join-Path $VenvDir 'Scripts\paperflow.cmd'
 $VenvPaperFlow = $VenvPaperFlowExe
-$VenvPaperFlowDoctor = $VenvPaperFlowExe
 $RequirementsLock = Join-Path $ProjectRoot 'requirements.lock'
 $LegacyPaperFlowHome = Join-Path $env:LOCALAPPDATA 'PaperFlow'
 $LegacyBinDir = Join-Path $LegacyPaperFlowHome 'bin'
@@ -80,6 +114,29 @@ $WrapperPath = Join-Path $BinDir 'paperflow.cmd'
 $ConfigPath = Join-Path $ConfigDir 'config.toml'
 $SkillSource = Join-Path $ProjectRoot '.agents\skills\paperflow'
 $SkillTarget = Join-Path $env:USERPROFILE '.agents\skills\paperflow'
+
+if ($DataRootSupplied) {
+    $overlapCandidates = @(
+        @{ Path = $ProjectRoot; Name = 'ProjectRoot' },
+        @{ Path = $SkillSource; Name = 'SkillSource' },
+        @{ Path = $SkillTarget; Name = 'SkillTarget' }
+    )
+    if ($VaultPath) {
+        try {
+            $vaultComparisonPath = [System.IO.Path]::GetFullPath($VaultPath)
+        }
+        catch {
+            throw "VaultPath is not a valid path: $($_.Exception.Message)"
+        }
+        $overlapCandidates += @{ Path = $vaultComparisonPath; Name = 'VaultPath' }
+    }
+    foreach ($candidate in $overlapCandidates) {
+        if (Test-PathsOverlap -First $ResolvedDataRoot -Second $candidate.Path) {
+            throw "DataRoot must not overlap $($candidate.Name): $($candidate.Path)"
+        }
+    }
+}
+
 $script:PythonCommand = $null
 $script:PythonPrefixArguments = @()
 
@@ -220,17 +277,40 @@ function Get-PaperFlowUserPath {
 }
 
 function Set-PaperFlowUserPath {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+    param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()]$Value)
 
     [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
 }
 
 function Assert-PersistedPaperFlowUserPath {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedValue)
+    param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()]$ExpectedValue)
 
-    $persistedValue = [string](Get-PaperFlowUserPath)
+    $persistedValue = Get-PaperFlowUserPath
     if (-not [System.StringComparer]::Ordinal.Equals($persistedValue, $ExpectedValue)) {
         throw 'User PATH did not persist the intended PaperFlow migration; exact legacy files were preserved.'
+    }
+}
+
+function Set-PaperFlowUserPathTransaction {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$IntendedValue,
+        [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()]$OriginalValue
+    )
+
+    try {
+        Set-PaperFlowUserPath -Value $IntendedValue
+        Assert-PersistedPaperFlowUserPath -ExpectedValue $IntendedValue
+    }
+    catch {
+        $migrationError = $_.Exception.Message
+        try {
+            Set-PaperFlowUserPath -Value $OriginalValue
+            Assert-PersistedPaperFlowUserPath -ExpectedValue $OriginalValue
+        }
+        catch {
+            throw "User PATH migration failed and rollback verification failed; manual PATH repair is required. Migration error: $migrationError Rollback error: $($_.Exception.Message)"
+        }
+        throw "User PATH migration failed; original user PATH was restored and verified. Migration error: $migrationError"
     }
 }
 
@@ -420,10 +500,14 @@ function Remove-EmptyNormalDirectory {
 }
 
 function Remove-LegacyPaperFlowFiles {
+    param([Parameter(Mandatory = $true)][bool]$RemoveLegacyConfig)
+
     $candidates = @(
-        @{ Path = $LegacyWrapperPath; NewPath = $WrapperPath },
-        @{ Path = $LegacyConfigPath; NewPath = $ConfigPath }
+        @{ Path = $LegacyWrapperPath; NewPath = $WrapperPath }
     )
+    if ($RemoveLegacyConfig) {
+        $candidates += @{ Path = $LegacyConfigPath; NewPath = $ConfigPath }
+    }
     $snapshots = @()
     foreach ($candidate in $candidates) {
         $legacyFullPath = [System.IO.Path]::GetFullPath($candidate.Path)
@@ -656,17 +740,18 @@ if ((Test-Path -LiteralPath $VenvPython -PathType Leaf) -and $PSCmdlet.ShouldPro
     }
 }
 
-if (Test-Path -LiteralPath $VenvPaperFlowCmd -PathType Leaf) {
-    $VenvPaperFlowDoctor = $VenvPaperFlowCmd
+if (Test-Path -LiteralPath $VenvPaperFlowExe -PathType Leaf) {
+    $VenvPaperFlow = $VenvPaperFlowExe
 }
-else {
-    $VenvPaperFlowDoctor = $VenvPaperFlowExe
+elseif (Test-Path -LiteralPath $VenvPaperFlowCmd -PathType Leaf) {
+    $VenvPaperFlow = $VenvPaperFlowCmd
 }
 
 if ($PSCmdlet.ShouldProcess($SkillTarget, 'Copy PaperFlow Skill for the current user')) {
     Install-PaperFlowSkill
 }
 
+$legacyConfigMigratedThisRun = $false
 if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
     Write-Host "Local config preserved: $ConfigPath"
 }
@@ -674,6 +759,7 @@ elseif ($DataRootSupplied -and (Test-RegularNonReparseFile -Path $LegacyConfigPa
     if ($PSCmdlet.ShouldProcess($ConfigPath, "Migrate exact legacy PaperFlow config from $LegacyConfigPath")) {
         [System.IO.Directory]::CreateDirectory($ConfigDir) | Out-Null
         Copy-FileBytesAtomically -Source $LegacyConfigPath -Destination $ConfigPath
+        $legacyConfigMigratedThisRun = $true
         Write-Host "Legacy config migrated byte-for-byte: $ConfigPath"
     }
 }
@@ -745,32 +831,9 @@ endlocal & exit /b %PAPERFLOW_EXIT_CODE%
 }
 
 if (-not $WhatIfPreference -and
-    (Test-Path -LiteralPath $WrapperPath -PathType Leaf) -and
-    (Test-Path -LiteralPath $VenvPaperFlowDoctor -PathType Leaf)) {
-    $doctorHomeWasPresent = Test-Path Env:PAPERFLOW_HOME
-    $doctorCacheWasPresent = Test-Path Env:PAPERFLOW_CACHE_DIR
-    $doctorTempWasPresent = Test-Path Env:TEMP
-    $doctorTmpWasPresent = Test-Path Env:TMP
-    $originalDoctorHome = $env:PAPERFLOW_HOME
-    $originalDoctorCache = $env:PAPERFLOW_CACHE_DIR
-    $originalDoctorTemp = $env:TEMP
-    $originalDoctorTmp = $env:TMP
-    try {
-        if ($DataRootSupplied) {
-            $env:PAPERFLOW_HOME = $ResolvedDataRoot
-            $env:PAPERFLOW_CACHE_DIR = $CacheDir
-            $env:TEMP = $TempDir
-            $env:TMP = $TempDir
-        }
-        & $VenvPaperFlowDoctor --json doctor
-        $doctorExitCode = $LASTEXITCODE
-    }
-    finally {
-        if ($doctorHomeWasPresent) { $env:PAPERFLOW_HOME = $originalDoctorHome } else { [Environment]::SetEnvironmentVariable('PAPERFLOW_HOME', $null, 'Process') }
-        if ($doctorCacheWasPresent) { $env:PAPERFLOW_CACHE_DIR = $originalDoctorCache } else { [Environment]::SetEnvironmentVariable('PAPERFLOW_CACHE_DIR', $null, 'Process') }
-        if ($doctorTempWasPresent) { $env:TEMP = $originalDoctorTemp } else { [Environment]::SetEnvironmentVariable('TEMP', $null, 'Process') }
-        if ($doctorTmpWasPresent) { $env:TMP = $originalDoctorTmp } else { [Environment]::SetEnvironmentVariable('TMP', $null, 'Process') }
-    }
+    (Test-Path -LiteralPath $WrapperPath -PathType Leaf)) {
+    & $WrapperPath --json doctor
+    $doctorExitCode = $LASTEXITCODE
     if ($doctorExitCode -ne 0) {
         if ($DataRootSupplied) {
             throw "PaperFlow doctor exited with code $doctorExitCode. Exact legacy wrapper and config were preserved."
@@ -781,7 +844,7 @@ if (-not $WhatIfPreference -and
     }
 }
 elseif ($DataRootSupplied -and -not $WhatIfPreference) {
-    throw 'PaperFlow doctor could not run because the new wrapper or virtual-environment command is missing. Exact legacy files were preserved.'
+    throw 'PaperFlow doctor could not run because the new wrapper is missing. Exact legacy files were preserved.'
 }
 
 $userPath = Get-PaperFlowUserPath
@@ -796,8 +859,7 @@ if ($DataRootSupplied) {
             $answer = Read-Host "Replace the exact legacy PaperFlow bin with '$BinDir' in your user PATH? [y/N]"
             if ($answer -match '^(?i:y|yes)$') {
                 if ($PSCmdlet.ShouldProcess('User PATH', "Migrate PaperFlow bin to $BinDir")) {
-                    Set-PaperFlowUserPath -Value $pathUpdate.Value
-                    Assert-PersistedPaperFlowUserPath -ExpectedValue $pathUpdate.Value
+                    Set-PaperFlowUserPathTransaction -IntendedValue $pathUpdate.Value -OriginalValue $userPath
                     $pathMigrationCommitted = $true
                     Write-Host 'User PATH migrated. Open a new terminal before running paperflow.'
                 }
@@ -823,8 +885,7 @@ else {
             $answer = Read-Host "Add '$BinDir' to your user PATH? [y/N]"
             if ($answer -match '^(?i:y|yes)$') {
                 if ($PSCmdlet.ShouldProcess('User PATH', "Add $BinDir")) {
-                    Set-PaperFlowUserPath -Value $pathUpdate.Value
-                    Assert-PersistedPaperFlowUserPath -ExpectedValue $pathUpdate.Value
+                    Set-PaperFlowUserPathTransaction -IntendedValue $pathUpdate.Value -OriginalValue $userPath
                     Write-Host 'User PATH updated. Open a new terminal before running paperflow.'
                 }
             }
@@ -840,7 +901,12 @@ else {
 
 if ($DataRootSupplied -and $pathMigrationCommitted -and
     $PSCmdlet.ShouldProcess('Exact legacy PaperFlow wrapper and config files', 'Remove after doctor and PATH migration succeeded')) {
-    Remove-LegacyPaperFlowFiles
+    if (-not $legacyConfigMigratedThisRun -and
+        (Test-RegularNonReparseFile -Path $ConfigPath) -and
+        (Test-RegularNonReparseFile -Path $LegacyConfigPath)) {
+        Write-Warning "New and legacy PaperFlow config.toml files were both preserved; manual reconciliation is required: '$ConfigPath' and '$LegacyConfigPath'."
+    }
+    Remove-LegacyPaperFlowFiles -RemoveLegacyConfig $legacyConfigMigratedThisRun
 }
 
 Write-Host 'PaperFlow installation steps completed.'
