@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+import urllib.parse
+import xml.etree.ElementTree as ET
+from datetime import date
+
+import httpx
+
+from paperflow.fetch import request_with_retry
+from paperflow.models import Paper
+from paperflow.normalize import canonical_arxiv_id
+
+ATOM = "http://www.w3.org/2005/Atom"
+ARXIV = "http://arxiv.org/schemas/atom"
+
+
+def _clean(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _text(node: ET.Element, name: str) -> str:
+    child = node.find(f"{{{ATOM}}}{name}")
+    if child is None:
+        return ""
+    return _clean("".join(child.itertext()))
+
+
+def parse_arxiv_feed(xml: str) -> list[Paper]:
+    result: list[Paper] = []
+    root = ET.fromstring(xml)
+    for entry in root.findall(f"{{{ATOM}}}entry"):
+        arxiv_id = canonical_arxiv_id(_text(entry, "id"))
+        category = entry.find(f"{{{ARXIV}}}primary_category")
+        authors = tuple(
+            name
+            for author in entry.findall(f"{{{ATOM}}}author")
+            if (name := _text(author, "name"))
+        )
+        result.append(
+            Paper(
+                arxiv_id=arxiv_id,
+                title=_text(entry, "title"),
+                authors=authors,
+                abstract=_text(entry, "summary"),
+                primary_category=(
+                    _clean(category.attrib.get("term"))
+                    if category is not None
+                    else ""
+                ),
+                published=_text(entry, "published")[:10],
+                sources=("arxiv",),
+                hf_upvotes=0,
+                url=f"https://arxiv.org/abs/{arxiv_id}",
+                pdf_url=f"https://arxiv.org/pdf/{arxiv_id}",
+            )
+        )
+    return result
+
+
+def fetch_arxiv(
+    client: httpx.Client,
+    target_date: date,
+    categories: tuple[str, ...],
+) -> list[Paper]:
+    del target_date
+    search_query = " OR ".join(f"cat:{category}" for category in categories)
+    query = urllib.parse.urlencode(
+        {
+            "search_query": search_query,
+            "start": 0,
+            "max_results": 100,
+            "sortBy": "submittedDate",
+            "sortOrder": "descending",
+        }
+    )
+    url = f"https://export.arxiv.org/api/query?{query}"
+    return parse_arxiv_feed(request_with_retry(client, url).text)

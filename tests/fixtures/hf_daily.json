@@ -1,0 +1,12 @@
+[
+  {
+    "paper": {
+      "id": "2608.12345",
+      "title": "Robotic 3D Reconstruction",
+      "summary": "A reconstruction method for mobile robots.",
+      "authors": [{"name": "Ada Researcher"}],
+      "upvotes": 12,
+      "publishedAt": "2026-08-20T01:00:00.000Z"
+    }
+  }
+]
