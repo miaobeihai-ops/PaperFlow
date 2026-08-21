@@ -438,6 +438,36 @@ def _invoke_atomic_config_copy(source: Path, destination: Path):
     )
 
 
+def _powershell_function_extent(script: Path, function_name: str) -> tuple[int, int]:
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    command = (
+        "$tokens = $null; $errors = $null; "
+        "$ast = [System.Management.Automation.Language.Parser]::ParseFile("
+        + _powershell_literal(str(script))
+        + ", [ref]$tokens, [ref]$errors); "
+        "$definition = $ast.Find({ param($node) $node -is "
+        "[System.Management.Automation.Language.FunctionDefinitionAst] -and "
+        f"$node.Name -eq {_powershell_literal(function_name)} }}, $true); "
+        "if ($null -eq $definition) { throw 'installer function not found' }; "
+        "@($definition.Extent.StartOffset, $definition.Extent.EndOffset) "
+        "| ConvertTo-Json -Compress"
+    )
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    start, end = json.loads(result.stdout)
+    return start, end
+
+
 def test_installer_declares_safe_preview_first_interface():
     text = INSTALLER.read_text(encoding="utf-8")
 
@@ -616,6 +646,24 @@ def test_user_path_backend_has_no_test_seam_and_uses_user_scope_only():
     should_process = path_flow.index("$PSCmdlet.ShouldProcess('User PATH'")
     write_call = path_flow.index("Set-PaperFlowUserPath -Value $pathUpdate.Value")
     assert should_process < write_call
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell structure test")
+def test_direct_user_path_access_is_confined_to_persistence_backend():
+    with INSTALLER.open("r", encoding="utf-8", newline="") as stream:
+        text = stream.read()
+    direct_access = "[Environment]::GetEnvironmentVariable('Path', 'User')"
+    occurrences = [match.start() for match in re.finditer(re.escape(direct_access), text)]
+    get_start, get_end = _powershell_function_extent(
+        INSTALLER, "Get-PaperFlowUserPath"
+    )
+    refresh_start, refresh_end = _powershell_function_extent(
+        INSTALLER, "Refresh-ProcessPath"
+    )
+
+    assert len(occurrences) == 1
+    assert get_start <= occurrences[0] < get_end
+    assert "Get-PaperFlowUserPath" in text[refresh_start:refresh_end]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
@@ -1461,7 +1509,7 @@ def _use_file_backed_user_path(
 def test_data_root_doctor_precedes_path_commit_and_legacy_cleanup():
     text = INSTALLER.read_text(encoding="utf-8")
     doctor_position = text.index("& $VenvPaperFlowDoctor --json doctor")
-    path_position = text.index("$userPath = Get-PaperFlowUserPath")
+    path_position = text.index("$userPath = Get-PaperFlowUserPath", doctor_position)
     cleanup_position = text.rindex("Remove-LegacyPaperFlowFiles")
 
     assert doctor_position < path_position < cleanup_position
@@ -1710,9 +1758,15 @@ def test_invalid_vault_fails_before_any_persistent_install_write(tmp_path):
 def test_install_missing_executes_only_missing_allowlisted_exact_ids(tmp_path):
     setup = _isolated_installer(tmp_path, ())
     winget_log = tmp_path / "winget.log"
+    refreshed_path_log = tmp_path / "refreshed-path.txt"
+    file_backed_user_bin = tmp_path / "file-backed-user-bin"
+    file_backed_user_bin.mkdir()
+    Path(setup["user_path_file"]).write_text(
+        str(file_backed_user_bin), encoding="utf-8"
+    )
     env = dict(setup["env"])
     env["PAPERFLOW_WINGET_LOG"] = str(winget_log)
-    env["PAPERFLOW_FAKE_BIN"] = str(setup["fake_bin"])
+    env["PAPERFLOW_FAKE_BIN"] = str(file_backed_user_bin)
     setup["env"] = env
     _write_command(
         Path(setup["fake_bin"]),
@@ -1720,7 +1774,14 @@ def test_install_missing_executes_only_missing_allowlisted_exact_ids(tmp_path):
         '@echo off\r\nif "%~3"=="Git.Git" echo @exit /b 0>"%PAPERFLOW_FAKE_BIN%\\git.cmd"\r\necho %*>>"%PAPERFLOW_WINGET_LOG%"\r\nexit /b 0\r\n',
     )
 
-    result = _run_isolated(setup, "-InstallMissing")
+    epilogue = (
+        "; [System.IO.File]::WriteAllText("
+        + _powershell_literal(str(refreshed_path_log))
+        + ", $env:Path)"
+    )
+    result = _run_dot_sourced_installer(
+        setup, "-InstallMissing", epilogue=epilogue
+    )
 
     assert result.returncode == 0, result.stdout + result.stderr
     calls = [line.strip() for line in winget_log.read_text(encoding="utf-8").splitlines()]
@@ -1730,6 +1791,13 @@ def test_install_missing_executes_only_missing_allowlisted_exact_ids(tmp_path):
         "install --id Obsidian.Obsidian --exact",
     ]
     assert all("Codex" not in call for call in calls)
+    assert (file_backed_user_bin / "git.cmd").is_file()
+    assert str(file_backed_user_bin) in refreshed_path_log.read_text(
+        encoding="utf-8"
+    ).split(";")
+    assert Path(setup["user_path_file"]).read_text(encoding="utf-8") == str(
+        file_backed_user_bin
+    )
 
 
 def test_ci_is_least_privilege_and_pinned_for_windows_and_linux():

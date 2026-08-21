@@ -211,7 +211,7 @@ function Install-WingetPackage {
 
 function Refresh-ProcessPath {
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $userPath = Get-PaperFlowUserPath
     $env:Path = @($env:Path, $machinePath, $userPath) -join ';'
 }
 
