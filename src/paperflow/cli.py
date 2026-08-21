@@ -23,6 +23,7 @@ from paperflow.config import (
     load_local_config,
 )
 from paperflow.daily import AllSourcesFailed, run_daily
+from paperflow.doctor import run_checks
 from paperflow.email import EmailDeliveryError, GmailSettings, send_daily_email
 from paperflow.models import DailyResult, SourceFailure
 from paperflow.normalize import canonical_arxiv_id
@@ -56,6 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
     note.add_argument("arxiv_id")
     note.add_argument("--force", action="store_true")
     note.add_argument(
+        "--json", action="store_true", dest="json_output", default=argparse.SUPPRESS
+    )
+    doctor = subparsers.add_parser("doctor")
+    doctor.add_argument(
         "--json", action="store_true", dest="json_output", default=argparse.SUPPRESS
     )
     return parser
@@ -371,6 +376,32 @@ def _run_note(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_doctor(args: argparse.Namespace) -> int:
+    checks = run_checks()
+    ok = all(check.ok or not check.required for check in checks)
+    if args.json_output:
+        _print_json(
+            {
+                "ok": ok,
+                "checks": [
+                    {
+                        "name": check.name,
+                        "ok": check.ok,
+                        "required": check.required,
+                        "message": check.message,
+                    }
+                    for check in checks
+                ],
+            }
+        )
+    else:
+        for check in checks:
+            status = "OK" if check.ok else "FAIL" if check.required else "WARN"
+            importance = "required" if check.required else "optional"
+            print(f"[{status}] {check.name} ({importance}): {check.message}")
+    return 0 if ok else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -389,6 +420,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_search(args)
     if args.command == "note":
         return _run_note(args)
+    if args.command == "doctor":
+        return _run_doctor(args)
     return 0
 
 

@@ -51,6 +51,61 @@ def test_no_command_prints_help_and_returns_zero(capsys):
     assert "usage: paperflow" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--json", "doctor"],
+        ["doctor", "--json"],
+    ],
+)
+def test_doctor_json_runs_all_checks_without_generic_config_load(
+    monkeypatch, capsys, argv
+):
+    from paperflow.doctor import Check
+
+    checks = (
+        Check("Git", True, True, "Git is available"),
+        Check("Configuration", False, True, "Configuration was not found"),
+        Check("AI Sidebar", False, False, "Verify AI Sidebar manually in Zotero"),
+    )
+    monkeypatch.setattr("paperflow.cli.run_checks", lambda: checks)
+    monkeypatch.setattr(
+        "paperflow.cli._load_config",
+        lambda: pytest.fail("doctor must not use the generic config loader"),
+    )
+
+    assert main(argv) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": False,
+        "checks": [
+            {
+                "name": check.name,
+                "ok": check.ok,
+                "required": check.required,
+                "message": check.message,
+            }
+            for check in checks
+        ],
+    }
+
+
+def test_doctor_optional_failure_is_human_readable_and_returns_zero(
+    monkeypatch, capsys
+):
+    from paperflow.doctor import Check
+
+    checks = (
+        Check("Python", True, True, "Python 3.11+ is available"),
+        Check("AI Sidebar", False, False, "Verify AI Sidebar manually in Zotero"),
+    )
+    monkeypatch.setattr("paperflow.cli.run_checks", lambda: checks)
+
+    assert main(["doctor"]) == 0
+    output = capsys.readouterr().out
+    assert "[OK] Python (required): Python 3.11+ is available" in output
+    assert "[WARN] AI Sidebar (optional): Verify AI Sidebar manually in Zotero" in output
+
+
 def test_main_dispatches_daily_to_run_daily(monkeypatch):
     commands = []
     monkeypatch.setattr(
