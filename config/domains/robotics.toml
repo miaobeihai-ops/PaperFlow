@@ -1,0 +1,41 @@
+display_name = "机器人研究日报"
+language = "zh-CN"
+lookback_hours = 48
+candidate_limit = 120
+deep_read_limit = 5
+query_seeds = [
+  "robotics",
+  "embodied intelligence",
+  "robot learning",
+  "vision language action",
+  "robot perception",
+  "robot planning",
+  "robot control",
+  "humanoid robot",
+]
+include_concepts = [
+  "real-world deployment",
+  "open source",
+  "benchmark",
+  "hardware experiment",
+  "industrial application",
+]
+exclude_concepts = ["software bot", "social media bot"]
+providers = ["arxiv", "huggingface", "crossref", "openalex", "feed"]
+arxiv_categories = ["cs.RO", "cs.AI", "cs.CV", "cs.LG"]
+feeds = []
+rubric = [
+  "topic relevance",
+  "technical novelty",
+  "evidence quality",
+  "deployment maturity",
+  "open-source value",
+]
+report_sections = [
+  "今日重点",
+  "技术方向进展",
+  "开源与复现价值",
+  "产业与政策信号",
+  "跨论文趋势",
+  "建议行动",
+]

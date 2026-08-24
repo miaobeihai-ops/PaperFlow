@@ -1,0 +1,47 @@
+display_name = "化工能源研究日报"
+language = "zh-CN"
+lookback_hours = 48
+candidate_limit = 120
+deep_read_limit = 5
+query_seeds = [
+  "hydrogen energy",
+  "hydrogen purification",
+  "gas separation",
+  "VOC recovery",
+  "membrane separation",
+  "carbon dioxide utilization",
+  "carbon capture",
+  "carbon capture policy",
+]
+include_concepts = [
+  "industrial application",
+  "mixed gas",
+  "long-term stability",
+  "process integration",
+  "energy consumption",
+  "techno-economic analysis",
+]
+exclude_concepts = ["medical gas", "astronomical gas"]
+providers = ["arxiv", "crossref", "openalex", "feed"]
+arxiv_categories = [
+  "physics.chem-ph",
+  "physics.flu-dyn",
+  "physics.app-ph",
+  "cond-mat.mtrl-sci",
+]
+feeds = []
+rubric = [
+  "topic relevance",
+  "technical novelty",
+  "evidence quality",
+  "industrial value",
+  "policy significance",
+]
+report_sections = [
+  "今日重点",
+  "分方向进展",
+  "工业化与政策信号",
+  "跨来源趋势",
+  "局限与待验证问题",
+  "建议行动",
+]
