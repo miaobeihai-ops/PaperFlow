@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 from typing import Mapping
@@ -72,6 +72,8 @@ def prepare_research(
     )[: profile.candidate_limit]
     run_id = str(uuid4())
     local_date = now.astimezone(_LOCAL_ZONE).date().isoformat()
+    local_end = now.astimezone(_LOCAL_ZONE)
+    local_start = local_end - timedelta(hours=profile.lookback_hours)
     run_dir = data_root / "runs" / domain / local_date / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     context_path = run_dir / "context.json"
@@ -81,6 +83,11 @@ def prepare_research(
         "domain": domain,
         "local_date": local_date,
         "generated_at": now.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "search_window": {
+            "started_at": local_start.isoformat(timespec="seconds"),
+            "ended_at": local_end.isoformat(timespec="seconds"),
+            "timezone": _LOCAL_ZONE.key,
+        },
         "profile": asdict(profile),
         "provider_statuses": [asdict(batch.status) for batch in batches],
         "candidates": [asdict(item) for item in candidates],

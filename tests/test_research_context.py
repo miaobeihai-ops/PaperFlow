@@ -32,6 +32,11 @@ def test_prepare_writes_unique_contexts_below_data_root(tmp_path):
     payload = json.loads(first.context_bytes)
     assert payload["schema_version"] == 1
     assert payload["candidates"][0]["key"] == "doi:10.1/example"
+    assert payload["search_window"] == {
+        "started_at": "2026-08-22T09:02:03+08:00",
+        "ended_at": "2026-08-24T09:02:03+08:00",
+        "timezone": "Asia/Hong_Kong",
+    }
 
 
 def test_prepare_has_no_date_or_catch_up_input():
