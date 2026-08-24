@@ -4,7 +4,8 @@ import argparse
 import json
 import os
 from collections.abc import Sequence
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -22,6 +23,7 @@ from paperflow.config import (
     config_from_topics,
     load_cloud_config,
     load_local_config,
+    require_paperflow_home,
 )
 from paperflow.daily import AllSourcesFailed, run_daily
 from paperflow.doctor import run_checks
@@ -38,6 +40,9 @@ from paperflow.topics import (
     remove_topic,
     resolve_topics_path,
 )
+from paperflow.providers import PROVIDERS
+from paperflow.research_context import inspect_context, prepare_research
+from paperflow.research_report import finalize_research
 
 
 _PUBLIC_SOURCES = frozenset(("hf-daily", "hf-trending", "arxiv"))
@@ -89,6 +94,20 @@ def build_parser() -> argparse.ArgumentParser:
             action="store_true",
             dest="json_output",
             default=argparse.SUPPRESS,
+        )
+    research = subparsers.add_parser("research")
+    research_commands = research.add_subparsers(dest="research_command", required=True)
+    research_prepare = research_commands.add_parser("prepare")
+    research_prepare.add_argument("--domain", required=True)
+    research_inspect = research_commands.add_parser("inspect")
+    research_inspect.add_argument("--domain", required=True)
+    research_inspect.add_argument("--context", required=True)
+    research_finalize = research_commands.add_parser("finalize")
+    research_finalize.add_argument("--context", required=True)
+    research_finalize.add_argument("--analysis", required=True)
+    for command in (research_prepare, research_inspect, research_finalize):
+        command.add_argument(
+            "--json", action="store_true", dest="json_output", default=argparse.SUPPRESS
         )
     return parser
 
@@ -554,6 +573,56 @@ def _run_doctor(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _run_research(args: argparse.Namespace) -> int:
+    try:
+        home = require_paperflow_home(os.environ)
+        if args.research_command == "prepare":
+            result = prepare_research(
+                args.domain,
+                home,
+                datetime.now(UTC),
+                PROVIDERS,
+                Path(__file__).resolve().parents[2],
+            )
+            payload = {
+                "ok": True,
+                "command": "research.prepare",
+                "domain": result.domain,
+                "run_id": result.run_id,
+                "local_date": result.local_date,
+                "context_path": str(result.context_path),
+                "candidate_count": result.candidate_count,
+                "partial": result.partial,
+            }
+        elif args.research_command == "inspect":
+            summary = inspect_context(Path(args.context), home, args.domain)
+            payload = {"ok": True, "command": "research.inspect", **summary}
+        else:
+            result = finalize_research(
+                Path(args.context), Path(args.analysis), home=home
+            )
+            payload = {
+                "ok": True,
+                "command": "research.finalize",
+                "domain": result.domain,
+                "local_date": result.local_date,
+                "selected_count": result.selected_count,
+                "markdown_path": str(result.markdown_path),
+                "json_path": str(result.json_path),
+            }
+    except ConfigError as exc:
+        _print_error(args, str(exc))
+        return 2
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _print_error(args, "research file could not be read or written")
+        return 3
+    if args.json_output:
+        _print_json(payload)
+    else:
+        print(f"{payload['command']}: {payload.get('domain', '')}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -576,6 +645,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_doctor(args)
     if args.command == "watch":
         return _run_watch(args)
+    if args.command == "research":
+        return _run_research(args)
     return 0
 
 

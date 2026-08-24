@@ -59,6 +59,13 @@ def resolve_paperflow_home(
     return home
 
 
+def require_paperflow_home(environ: Mapping[str, str]) -> Path:
+    home = resolve_paperflow_home(environ)
+    if home is None:
+        raise ConfigError("PAPERFLOW_HOME is required for research commands")
+    return home
+
+
 def default_local_config_path() -> Path:
     home = resolve_paperflow_home(
         os.environ, path_exists=Path.exists, path_is_dir=Path.is_dir
