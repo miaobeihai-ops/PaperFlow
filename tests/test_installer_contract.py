@@ -2477,6 +2477,7 @@ def test_readme_documents_executable_flow_in_required_order():
         "paperflow --json research prepare --domain chemical-energy",
         "paperflow --json research prepare --domain robotics",
         "paperflow --json research finalize --context <context.json> --analysis <analysis.json>",
+        "paperflow --json research finalize --context <context.json> --analysis <analysis.json> --pdf",
     ):
         assert command in text
     assert "%USERPROFILE%\\.agents\\skills\\paperflow" in text
@@ -2658,7 +2659,19 @@ def test_readme_documents_local_codex_privacy_retention():
     text = _read("README.md")
     privacy = _markdown_section(text, "隐私边界")
 
-    for requirement in ("cache", "tmp", "runs", "reports", "D:\\PaperFlowData", "Codex 本地任务", "GitHub 每日邮件 workflow", "Scopus/Web of Science", "不由 PaperFlow 自动处理或保存"):
+    for requirement in (
+        "cache",
+        "tmp",
+        "runs",
+        "reports",
+        "D:\\PaperFlowData",
+        "Codex 本地任务",
+        "GitHub 每日邮件 workflow",
+        "Scopus、Web of Science 和 SciFinder",
+        "由用户完成 CARSI/CAS 登录",
+        "不自动处理或保存登录、CAPTCHA、密码、Cookie",
+        "不自动化下载学校数据库资源",
+    ):
         assert requirement in privacy
 
 

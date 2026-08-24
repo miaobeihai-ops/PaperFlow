@@ -94,6 +94,7 @@ paperflow --json research prepare --domain chemical-energy
 paperflow --json research prepare --domain robotics
 paperflow --json research inspect --domain chemical-energy --context <context.json>
 paperflow --json research finalize --context <context.json> --analysis <analysis.json>
+paperflow --json research finalize --context <context.json> --analysis <analysis.json> --pdf
 ```
 
 也可直接使用默认的人类可读输出：
@@ -104,7 +105,7 @@ paperflow search "3d reconstruction"
 paperflow daily
 ```
 
-智能日报流程是：`research prepare` 采集当前时间窗口并写入不可变 context → Codex 阅读上下文、按需做有界补充搜索并生成结构化 analysis → `research finalize` 校验来源并生成 Markdown/JSON。报告位于 `%PAPERFLOW_HOME%\reports\<domain>\YYYY-MM-DD.*`，运行证据位于 `%PAPERFLOW_HOME%\runs\...`。该流程没有 `--date`、补跑或回填参数。
+智能日报流程是：`research prepare` 采集当前时间窗口并写入不可变 context → Codex 阅读上下文、按需做有界补充搜索并生成结构化 analysis → `research finalize` 校验来源并生成 Markdown/JSON/HTML，显式增加 `--pdf` 时再调用本机 Chrome 或 Edge 输出 PDF。报告显示带时区的明确检索起止时间。报告位于 `%PAPERFLOW_HOME%\reports\<domain>\YYYY-MM-DD.*`，运行证据位于 `%PAPERFLOW_HOME%\runs\...`。该流程没有 `--date`、补跑或回填参数。
 
 原有 one-off search、watch、Obsidian daily/note 命令继续兼容。`search` 在线结果不会自动保存；`watch add/remove` 与 `note` 仍需要用户确认。
 
@@ -127,7 +128,7 @@ paperflow daily
 
 - 使用 `-DataRoot` 时，配置、cache、tmp、runs、reports 与 wrapper 均位于所选数据根目录；默认建议 `D:\PaperFlowData`。
 - Codex 本地任务会读取 context 和公开论文/PDF，并在本机写 analysis 与报告。仓库不再包含 GitHub 每日邮件 workflow；CI 只运行测试。
-- PaperFlow 的网络访问限于代码固定的公开论文 API 和配置的 HTTPS 订阅源。Scopus/Web of Science 登录、CAPTCHA 和密码不由 PaperFlow 自动处理或保存。
+- PaperFlow 的网络访问限于代码固定的公开论文 API 和配置的 HTTPS 订阅源。Scopus、Web of Science 和 SciFinder 只允许在受控浏览器中由用户完成 CARSI/CAS 登录后进行有界检索；PaperFlow 不自动处理或保存登录、CAPTCHA、密码、Cookie，也不自动化下载学校数据库资源。
 - 公开的领域配置会暴露研究兴趣；私人覆盖文件不要提交 Git。
 - 安装器不读取或采集 Gmail Secrets，不接触 `zotero.sqlite`，不读取 AI Sidebar 密钥。PaperFlow 本身不要求付费模型或付费数据库。
 

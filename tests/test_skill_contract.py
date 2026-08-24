@@ -58,6 +58,7 @@ def test_skill_allows_only_real_json_commands_and_flags():
             'paperflow --json research prepare --domain chemical-energy',
             'paperflow --json research prepare --domain robotics',
             'paperflow --json research finalize --context <context.json> --analysis <analysis.json>',
+            'paperflow --json research finalize --context <context.json> --analysis <analysis.json> --pdf',
     }
     documented_commands = set(re.findall(r"`(paperflow [^`]+)`", text))
     assert allowed_commands <= documented_commands
@@ -80,11 +81,11 @@ def test_skill_allows_only_real_json_commands_and_flags():
             "--domain",
             "--context",
             "--analysis",
+            "--pdf",
         }
     assert "paperflow recommend" not in text.casefold()
     assert "--format" not in text
     assert "--scope" not in text
-    assert "database" not in text.casefold()
 
 
 def test_skill_encodes_result_save_exit_and_safety_contracts():
@@ -164,3 +165,19 @@ def test_skill_is_concise_and_has_required_sections():
     assert "## Safety and Exit Handling" in text
     assert "```mermaid" not in text
     assert "```dot" not in text
+
+
+def test_skill_requires_exact_windows_full_text_proof_and_safe_institutional_access():
+    folded = _skill_text().casefold()
+    for requirement in (
+        "exact start and end timestamps",
+        "full_text_file",
+        "figure number",
+        "pdf page",
+        "cc by 4.0",
+        "carsi",
+        "user completes",
+        "never store institutional credentials",
+        "never automate institutional database downloads",
+    ):
+        assert requirement in folded
