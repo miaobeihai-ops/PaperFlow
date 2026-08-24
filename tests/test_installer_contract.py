@@ -2455,7 +2455,6 @@ def test_readme_documents_executable_flow_in_required_order():
         "命令",
         "Codex Skill",
         "Zotero 协作流程",
-        "GitHub Actions 云端邮件",
         "隐私边界",
         "升级与卸载",
         "故障排查",
@@ -2474,15 +2473,15 @@ def test_readme_documents_executable_flow_in_required_order():
         'paperflow --json watch remove "robotics"',
         "paperflow --json note 2401.01234",
         "paperflow --json doctor",
-        "paperflow --json daily --email --no-write",
+        "paperflow --json research prepare --domain chemical-energy",
+        "paperflow --json research prepare --domain robotics",
+        "paperflow --json research finalize --context <context.json> --analysis <analysis.json>",
     ):
         assert command in text
     assert "%USERPROFILE%\\.agents\\skills\\paperflow" in text
     assert "Zotero Connector" in text
     assert "AI Sidebar" in text
-    assert "workflow_dispatch" in text
     assert "arXiv 429" in text
-    assert "App Password" in text
     assert "ExecutionPolicy" in text
     assert "zotero.sqlite" in text
     assert "SQLite" in text
@@ -2511,6 +2510,8 @@ def test_readme_documents_data_root_install_layout_and_scoped_environment():
         r"D:\PaperFlowData\config\config.toml",
         r"D:\PaperFlowData\cache",
         r"D:\PaperFlowData\tmp",
+        r"%PAPERFLOW_HOME%\runs",
+        r"%PAPERFLOW_HOME%\reports",
         r"%USERPROFILE%\.agents\skills\paperflow",
     ):
         assert path in text
@@ -2652,37 +2653,12 @@ def test_readme_has_no_concrete_windows_user_profile_path():
     assert concrete_profile.search(text) is None
 
 
-def test_readme_separates_local_and_cloud_privacy_retention():
+def test_readme_documents_local_codex_privacy_retention():
     text = _read("README.md")
     privacy = _markdown_section(text, "隐私边界")
 
-    assert "本地模式" in privacy
-    assert "本地元数据和报告" in privacy
-    assert "保留在本机" in privacy
-    assert "Hugging Face 和 arXiv" in privacy
-    assert "仅在启用邮件时连接 Gmail SMTP" in privacy
-    assert "PaperFlow 本身没有模型客户端" in privacy
-    assert "AI Sidebar" in privacy
-    assert "模型端点" in privacy
-    assert "不属于 PaperFlow 自身的进程或配置" in privacy
-    assert "GitHub Actions 云端模式" in privacy
-    assert "GitHub 托管 runner" in privacy
-    assert "JSON/stdout" in privacy
-    assert "Actions 日志" in privacy
-    assert "GitHub 的日志保留策略" in privacy
-    assert "邮件内容" in privacy
-    assert "发件人和收件人邮箱" in privacy
-    assert "SMTP 凭据" in privacy
-    assert "PAPERFLOW_PRIVATE_CONFIG_JSON" in privacy
-    assert "私有运行时配置" in privacy
-    assert "Secrets 不会被有意打印" in privacy
-    assert "更强隐私" in privacy
-    assert "本地调度并关闭邮件" in privacy
-    assert "减少 workflow 输出" in privacy
-    assert "用户自行配置的模型端点" not in privacy
-    assert "GitHub Secrets 用于运行时认证" not in privacy
-    assert "不提供 Web UI、向量检索或云端持久化" not in text
-    assert "元数据和报告文件都保留在本地" not in text
+    for requirement in ("cache", "tmp", "runs", "reports", "D:\\PaperFlowData", "Codex 本地任务", "GitHub 每日邮件 workflow", "Scopus/Web of Science", "不由 PaperFlow 自动处理或保存"):
+        assert requirement in privacy
 
 
 def test_readme_documents_upgrade_uninstall_privacy_and_usage_contracts():
@@ -2697,33 +2673,34 @@ def test_readme_documents_upgrade_uninstall_privacy_and_usage_contracts():
     assert "不要递归删除 Vault" in text
     assert "不要递归删除未知的旧版内容" in text
     assert "不使用 SQLite 或其他数据库" in text
-    assert "本地元数据和报告" in privacy
-    assert "保留在本机" in privacy
-    assert "论文提供方" in text
-    assert "PaperFlow 本身没有模型客户端" in privacy
-    assert "AI Sidebar" in privacy
-    assert "不属于 PaperFlow 自身的进程或配置" in privacy
+    assert "runs、reports" in privacy
+    assert "公开论文 API" in text
+    assert "Codex 本地任务" in privacy
     for command in (
         "paperflow doctor",
         'paperflow search "3d reconstruction"',
         "paperflow daily",
     ):
         assert command in text
-    assert r"<Vault>\PaperFlow\Reports\YYYY-MM-DD.md" in text
+    assert r"%PAPERFLOW_HOME%\reports\<domain>\YYYY-MM-DD.*" in text
 
 
-def test_readme_has_three_mail_secrets_and_legacy_json_compatibility():
+def test_readme_removes_cloud_daily_email_setup():
     text = _read("README.md")
-    for name in (
-        "PAPERFLOW_GMAIL_ADDRESS",
-        "PAPERFLOW_GMAIL_APP_PASSWORD",
-        "PAPERFLOW_MAIL_TO",
-    ):
-        assert name in text
+    assert "## GitHub Actions 云端邮件" not in text
+    assert "paperflow --json daily --email --no-write" not in text
+    assert "仓库不再包含 GitHub 每日邮件 workflow" in text
 
-    assert "PAPERFLOW_PRIVATE_CONFIG_JSON" in text
-    assert "兼容" in text
-    assert "不再由随附 workflow 使用" in text
+
+def test_installer_creates_research_runtime_directories_on_data_root():
+    text = _read("scripts/install-windows.ps1")
+    for statement in (
+        "$RunsDir = Join-Path $ResolvedDataRoot 'runs'",
+        "$ReportsDir = Join-Path $ResolvedDataRoot 'reports'",
+        "$ChemicalReportsDir = Join-Path $ReportsDir 'chemical-energy'",
+        "$RoboticsReportsDir = Join-Path $ReportsDir 'robotics'",
+    ):
+        assert statement in text
     assert "<!-- cloud-config-example -->" not in text
 
 

@@ -1,10 +1,10 @@
 # PaperFlow
 
-PaperFlow 是一个免费、私有优先、本地优先且无数据库的论文发现工作流：每天从 Hugging Face Daily/Trending 与 arXiv 获取论文，确定性排序后写入 Obsidian，并可由 GitHub Actions 通过 Gmail SMTP 发送日报。Zotero 负责收藏、PDF、批注和阅读，Codex Skill 负责把自然语言请求映射为安全的 CLI 命令。
+PaperFlow 是一个免费、私有优先、本地优先且无数据库的研究工作流。公开来源适配器负责确定性采集，Codex 负责检索策略、深读、比较、证据判断和报告分析，PaperFlow 再校验引用并生成化工能源与机器人两份独立日报。Zotero 仍负责收藏、PDF、批注和阅读。
 
 ## 用途与非目标
 
-适合个人在 Windows 上完成“发现 → 筛选 → Obsidian 报告/笔记 → Zotero 阅读”的轻量流程。它不使用 SQLite 或其他数据库，不提供 Web UI 或向量检索，也不会自动修改 Zotero 数据库。本地运行与 GitHub Actions 云端运行具有不同的数据边界，详见“隐私边界”。核心流程不要求购买服务或配置模型。Zotero AI Sidebar 是独立的可选项目，不随 PaperFlow 分发。
+适合个人在 Windows 上完成“多源发现 → Codex 智能筛选/深读 → 本地双日报 → Zotero 阅读”的轻量流程。它不使用 SQLite 或其他数据库，不提供 Web UI 或向量检索，也不会自动修改 Zotero 数据库。定时执行由 Codex 本地任务负责；电脑关机或休眠时该次任务直接错过，不做补跑。PaperFlow 本身不调用付费模型 API；Codex 的可用性取决于你的 Codex 账户方案。
 
 ## Windows 前置条件
 
@@ -75,7 +75,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps
 vault_path = "D:\\ObsidianVault"
 ```
 
-长期关注主题、arXiv 分类、时区、每日数量和历史保留数量统一放在版本化的 `config/topics.toml`。修改它即可同时影响本地日报和 GitHub Actions 邮件。该文件会公开你的研究兴趣；公开仓库中不要写入不希望公开的主题。论文 provider 地址由程序内部维护，不是用户配置项。旧版把 `keywords`、`timezone` 等字段内联在本地 config.toml 的格式仍兼容，但不再推荐。
+长期关注主题、arXiv 分类、时区、每日数量和历史保留数量统一放在版本化的 `config/topics.toml`。两类智能日报的公开检索策略分别位于 `config/domains/chemical-energy.toml` 和 `config/domains/robotics.toml`；私人关键词覆盖可放在数据根的 `config/domains/<domain>.local.toml`。这些文件可能暴露研究兴趣，公开仓库中不要写秘密。Crossref、OpenAlex 等 provider 地址由程序内部维护，不是用户配置项。
 
 ## 命令
 
@@ -90,6 +90,10 @@ paperflow --json watch add "vision language action" --weight 8
 paperflow --json watch remove "robotics"
 paperflow --json note 2401.01234
 paperflow --json doctor
+paperflow --json research prepare --domain chemical-energy
+paperflow --json research prepare --domain robotics
+paperflow --json research inspect --domain chemical-energy --context <context.json>
+paperflow --json research finalize --context <context.json> --analysis <analysis.json>
 ```
 
 也可直接使用默认的人类可读输出：
@@ -100,15 +104,13 @@ paperflow search "3d reconstruction"
 paperflow daily
 ```
 
-典型流程是：one-off search → shortlist → optional note；也可以在确认后 watch add，让它进入未来的本地或云端 daily。`daily` 默认原子写入或更新 `<Vault>\PaperFlow\Reports\YYYY-MM-DD.md`；单篇笔记出现在 `<Vault>\PaperFlow\Papers\<arxiv_id>.md`。`search` 同时查本地历史和 arXiv，在线结果不会自动保存；`watch list` 只读，`watch add/remove` 修改共享主题文件；`note` 写入单篇笔记，已有文件时不会覆盖；`doctor` 只读检查环境。云端邮件使用：
+智能日报流程是：`research prepare` 采集当前时间窗口并写入不可变 context → Codex 阅读上下文、按需做有界补充搜索并生成结构化 analysis → `research finalize` 校验来源并生成 Markdown/JSON。报告位于 `%PAPERFLOW_HOME%\reports\<domain>\YYYY-MM-DD.*`，运行证据位于 `%PAPERFLOW_HOME%\runs\...`。该流程没有 `--date`、补跑或回填参数。
+
+原有 one-off search、watch、Obsidian daily/note 命令继续兼容。`search` 在线结果不会自动保存；`watch add/remove` 与 `note` 仍需要用户确认。
 
 `daily --date YYYY-MM-DD` 对 Hugging Face Daily、Hugging Face Trending 和 arXiv 三个来源都按论文发布日期筛选。旧日期可能为空，也可能受上游源的保留范围限制；命令不会为每篇论文额外发起请求。
 
-```text
-paperflow --json daily --email --no-write
-```
-
-它不写本地 Vault。退出码为 2 表示配置问题，3 表示全部来源失败，5 表示邮件发送失败。
+退出码 2 表示配置或输入错误，3 表示来源或文件读写失败。`partial=true` 表示部分来源不可用但上下文仍可分析。
 
 ## Codex Skill
 
@@ -121,24 +123,12 @@ paperflow --json daily --email --no-write
 3. 在 Zotero 中阅读、标注；PaperFlow 永不写 `zotero.sqlite`。
 4. 如需问答或摘要，单独安装 huangkiki/zotero-ai-sidebar（AI Sidebar），并在该扩展中自行配置服务。PaperFlow 不读取 Sidebar 密钥，也不自动配置 WebDAV。
 
-## GitHub Actions 云端邮件
-
-仓库自带 `.github/workflows/daily.yml`。任务本身不创建数据库或上传报告 Artifact，但会在 GitHub 托管 runner 上处理论文元数据，并可能通过日志和邮件留下副本；具体边界见下一节。到 GitHub 仓库的 Settings → Secrets and variables → Actions 新建三个 Secrets：
-
-- `PAPERFLOW_GMAIL_ADDRESS`：发件 Gmail 地址。
-- `PAPERFLOW_GMAIL_APP_PASSWORD`：Google 账户生成的 App Password，不是登录密码。
-- `PAPERFLOW_MAIL_TO`：日报收件邮箱。
-
-主题和公开偏好直接读取仓库的 `config/topics.toml`。旧的 `PAPERFLOW_PRIVATE_CONFIG_JSON` 仍作为兼容入口接受，但不再由随附 workflow 使用；升级后应改用上述三个邮件 Secrets。首次部署时 workflow 不会自行创建 Secrets。
-
-首次配置后，在 Actions → Daily PaperFlow email → Run workflow 触发 `workflow_dispatch`，检查运行日志和收件箱。不要把真实 Secret 写入仓库、Issue 或日志。
-
 ## 隐私边界
 
-- **本地模式**：使用 `-DataRoot` 时，配置、cache、tmp 与 wrapper 位于所选数据根目录；本地元数据和报告写入你指定的 Vault 并保留在本机。PaperFlow 的网络访问限于 Hugging Face 和 arXiv 等论文提供方，并且仅在启用邮件时连接 Gmail SMTP。PaperFlow 本身没有模型客户端；独立可选的 AI Sidebar 可使用它自己的配置访问模型端点，该访问不属于 PaperFlow 自身的进程或配置。
-- **GitHub Actions 云端模式**：计划任务在 GitHub 托管 runner 上处理论文元数据。即使 workflow 不上传报告 Artifact、也不使用 SQLite 或其他数据库，JSON/stdout 中的论文详情仍可能进入 Actions 日志，并按 GitHub 的日志保留策略留存；发送的邮件内容会持续存在于发件人和收件人邮箱。
-- GitHub Secrets 会向 workflow 注入 SMTP 凭据和收件地址；PaperFlow 和随附 workflow 不会有意输出这些值，Secrets 不会被有意打印。`PAPERFLOW_PRIVATE_CONFIG_JSON` 仅是旧版私有运行时配置兼容入口，不再由随附 workflow 使用。仍应避免把真实 Secret 写入仓库、Issue、配置示例或调试输出。公开的 `config/topics.toml` 会暴露研究兴趣。
-- 如需更强隐私，优先使用本地调度并关闭邮件；若仍使用云端任务，可减少 workflow 输出，以降低 Actions 日志中的论文详情。
+- 使用 `-DataRoot` 时，配置、cache、tmp、runs、reports 与 wrapper 均位于所选数据根目录；默认建议 `D:\PaperFlowData`。
+- Codex 本地任务会读取 context 和公开论文/PDF，并在本机写 analysis 与报告。仓库不再包含 GitHub 每日邮件 workflow；CI 只运行测试。
+- PaperFlow 的网络访问限于代码固定的公开论文 API 和配置的 HTTPS 订阅源。Scopus/Web of Science 登录、CAPTCHA 和密码不由 PaperFlow 自动处理或保存。
+- 公开的领域配置会暴露研究兴趣；私人覆盖文件不要提交 Git。
 - 安装器不读取或采集 Gmail Secrets，不接触 `zotero.sqlite`，不读取 AI Sidebar 密钥。PaperFlow 本身不要求付费模型或付费数据库。
 
 ## 升级与卸载

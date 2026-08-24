@@ -34,10 +34,12 @@ def test_skill_frontmatter_has_trigger_only_name_and_description():
         trigger in description.casefold()
         for trigger in (
             "today's papers",
-            "paper search",
-            "watched research topics",
-            "obsidian paper note",
+            "active paper search",
+            "watched topics",
+            "paper note",
             "diagnostics",
+            "chemical-energy",
+            "robotics",
         )
     )
     assert len(frontmatter) == 2
@@ -52,7 +54,10 @@ def test_skill_allows_only_real_json_commands_and_flags():
         'paperflow --json watch add "<topic>" --weight <1-100>',
         'paperflow --json watch remove "<topic>"',
         'paperflow --json note <arxiv-id>',
-        'paperflow --json doctor',
+            'paperflow --json doctor',
+            'paperflow --json research prepare --domain chemical-energy',
+            'paperflow --json research prepare --domain robotics',
+            'paperflow --json research finalize --context <context.json> --analysis <analysis.json>',
     }
     documented_commands = set(re.findall(r"`(paperflow [^`]+)`", text))
     assert allowed_commands <= documented_commands
@@ -71,8 +76,11 @@ def test_skill_allows_only_real_json_commands_and_flags():
         "--sort",
         "--weight",
         "--force",
-        "--email",
-    }
+            "--email",
+            "--domain",
+            "--context",
+            "--analysis",
+        }
     assert "paperflow recommend" not in text.casefold()
     assert "--format" not in text
     assert "--scope" not in text

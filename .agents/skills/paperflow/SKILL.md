@@ -1,6 +1,6 @@
 ---
 name: paperflow
-description: Use when the user asks for today's papers, paper search, watched research topics, an Obsidian paper note, or PaperFlow diagnostics.
+description: Use when the user asks for a chemical-energy or robotics research report, today's papers, active paper search, watched topics, a paper note, or PaperFlow diagnostics.
 ---
 
 # PaperFlow
@@ -16,6 +16,13 @@ Use PaperFlow as the single entry point and always request JSON. Parse only retu
 - Diagnostics: `paperflow --json doctor` is read-only. Explain required versus optional checks.
 
 ## Codex Research Flow
+
+- For an intelligent domain report, run `paperflow --json doctor`, then exactly one of `paperflow --json research prepare --domain chemical-energy` or `paperflow --json research prepare --domain robotics`.
+- Read only the returned `context_path`. Evaluate coverage, perform additional bounded searches when useful, and deeply inspect at most the profile's `deep_read_limit` papers. Use `full_text` only when the PDF was actually read; otherwise use `abstract`.
+- Write schema-version 1 `analysis.json` next to `context.json`. Every selected `candidate_id` and citation URL must come from that context. Do not copy or rewrite title, authors, date, DOI, arXiv ID, or source URLs into analysis fields.
+- Run `paperflow --json research finalize --context <context.json> --analysis <analysis.json>` and report the returned Markdown and JSON paths. Chemical-energy and robotics are separate reports.
+- The scheduled flow is current-run only. Never add `--date`, catch-up, backfill, or missed-run logic. A sleeping or powered-off computer simply misses that run.
+- Provider failures with a usable context are partial success: explain the missing coverage and continue. If Scopus or Web of Science requires login, stop that provider and ask the user; never store credentials or automate CAPTCHA.
 
 - Treat one-off search and watched topics as different intents. Never add a search query to the watchlist without approval.
 - For a complex question, run one to three bounded searches, merge online results by `arxiv_id`, and explain why the strongest candidates match. Do not invent fields absent from JSON.

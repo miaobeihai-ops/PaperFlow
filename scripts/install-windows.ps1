@@ -110,6 +110,10 @@ if ($DataRootSupplied) {
     $ConfigDir = Join-Path $ResolvedDataRoot 'config'
     $CacheDir = Join-Path $ResolvedDataRoot 'cache'
     $TempDir = Join-Path $ResolvedDataRoot 'tmp'
+    $RunsDir = Join-Path $ResolvedDataRoot 'runs'
+    $ReportsDir = Join-Path $ResolvedDataRoot 'reports'
+    $ChemicalReportsDir = Join-Path $ReportsDir 'chemical-energy'
+    $RoboticsReportsDir = Join-Path $ReportsDir 'robotics'
 }
 else {
     $PaperFlowHome = $LegacyPaperFlowHome
@@ -788,7 +792,7 @@ if ($missingRequired.Count -gt 0) {
 }
 
 if ($DataRootSupplied -and $PSCmdlet.ShouldProcess($ResolvedDataRoot, 'Create PaperFlow data directories')) {
-    foreach ($directory in @($ResolvedDataRoot, $BinDir, $ConfigDir, $CacheDir, $TempDir)) {
+    foreach ($directory in @($ResolvedDataRoot, $BinDir, $ConfigDir, $CacheDir, $TempDir, $RunsDir, $ReportsDir, $ChemicalReportsDir, $RoboticsReportsDir)) {
         [System.IO.Directory]::CreateDirectory($directory) | Out-Null
     }
 }
