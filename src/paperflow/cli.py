@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -31,7 +31,13 @@ from paperflow.normalize import canonical_arxiv_id
 from paperflow.notes import NoteExists, paper_note_path, write_paper_note
 from paperflow.report import render_email_html, render_email_text
 from paperflow.search import search_history
-from paperflow.topics import load_topic_settings, resolve_topics_path
+from paperflow.topics import (
+    TopicSettings,
+    add_topic,
+    load_topic_settings,
+    remove_topic,
+    resolve_topics_path,
+)
 
 
 _PUBLIC_SOURCES = frozenset(("hf-daily", "hf-trending", "arxiv"))
@@ -52,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
     search = subparsers.add_parser("search")
     search.add_argument("query")
     search.add_argument("--history-only", action="store_true")
+    search.add_argument("--category", action="append", default=[])
+    search.add_argument("--since")
+    search.add_argument("--limit", default="20")
+    search.add_argument("--sort", default="relevance")
     search.add_argument(
         "--json", action="store_true", dest="json_output", default=argparse.SUPPRESS
     )
@@ -65,6 +75,21 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument(
         "--json", action="store_true", dest="json_output", default=argparse.SUPPRESS
     )
+    watch = subparsers.add_parser("watch")
+    watch_commands = watch.add_subparsers(dest="watch_command", required=True)
+    watch_list = watch_commands.add_parser("list")
+    watch_add = watch_commands.add_parser("add")
+    watch_add.add_argument("topic")
+    watch_add.add_argument("--weight", required=True)
+    watch_remove = watch_commands.add_parser("remove")
+    watch_remove.add_argument("topic")
+    for command in (watch_list, watch_add, watch_remove):
+        command.add_argument(
+            "--json",
+            action="store_true",
+            dest="json_output",
+            default=argparse.SUPPRESS,
+        )
     return parser
 
 
@@ -298,8 +323,40 @@ def _paper_json(paper) -> dict[str, object]:
     }
 
 
+def _parse_since(value: str | None, today: date | None = None) -> date | None:
+    if value is None:
+        return None
+    reference = today or date.today()
+    if value.endswith("d") and value[:-1].isdigit():
+        days = int(value[:-1])
+        if days < 1:
+            raise ConfigError("since duration must be positive")
+        return reference - timedelta(days=days)
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ConfigError("since must be YYYY-MM-DD or Nd") from exc
+
+
+def _parse_bounded_integer(
+    value: str, name: str, lower: int, upper: int
+) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be an integer") from exc
+    if not lower <= parsed <= upper:
+        raise ConfigError(f"{name} must be between {lower} and {upper}")
+    return parsed
+
+
 def _run_search(args: argparse.Namespace) -> int:
     try:
+        limit = _parse_bounded_integer(args.limit, "limit", 1, 100)
+        if args.sort not in ("relevance", "newest"):
+            raise ConfigError("sort must be relevance or newest")
+        since = _parse_since(args.since)
+        categories = tuple(args.category)
         if not args.query.strip():
             raise ConfigError("query must not be blank")
         config = _load_config()
@@ -313,7 +370,19 @@ def _run_search(args: argparse.Namespace) -> int:
         online = []
         if not args.history_only:
             with httpx.Client() as client:
-                online = search_arxiv(client, args.query)
+                try:
+                    online = search_arxiv(
+                        client,
+                        args.query,
+                        max_results=limit,
+                        categories=categories,
+                        since=since,
+                        sort=args.sort,
+                    )
+                except ArxivResponseError:
+                    raise
+                except ValueError as exc:
+                    raise ConfigError(str(exc)) from exc
     except ConfigError as exc:
         _print_error(args, str(exc))
         return 2
@@ -332,6 +401,12 @@ def _run_search(args: argparse.Namespace) -> int:
         "query": args.query,
         "history": history,
         "online": [_paper_json(paper) for paper in online],
+        "filters": {
+            "categories": list(categories),
+            "since": since.isoformat() if since else None,
+            "limit": limit,
+            "sort": args.sort,
+        },
     }
     if args.json_output:
         _print_json(payload)
@@ -341,6 +416,63 @@ def _run_search(args: argparse.Namespace) -> int:
             print(f"{item['arxiv_id']}  {item['title']}")
         for paper in online:
             print(f"{paper.arxiv_id}  {paper.title}")
+    return 0
+
+
+def _topic_payload(settings: TopicSettings) -> dict[str, object]:
+    return {
+        "topics": dict(sorted(settings.topics.items())),
+        "arxiv_categories": list(settings.arxiv_categories),
+        "timezone": settings.timezone,
+        "top_n": settings.top_n,
+        "history_reports": settings.history_reports,
+    }
+
+
+def _run_watch(args: argparse.Namespace) -> int:
+    try:
+        path = resolve_topics_path(os.environ)
+        if path is None:
+            raise ConfigError("topic file is not configured")
+        before = load_topic_settings(path)
+        action = "listed"
+        changed = False
+        topic = None
+        weight = None
+        settings = before
+        if args.watch_command == "add":
+            topic = args.topic.strip().casefold()
+            existed = topic in before.topics
+            weight = _parse_bounded_integer(args.weight, "weight", 1, 100)
+            changed, settings = add_topic(path, topic, weight)
+            action = (
+                "updated"
+                if existed and changed
+                else "added"
+                if changed
+                else "unchanged"
+            )
+        elif args.watch_command == "remove":
+            topic = args.topic.strip().casefold()
+            changed, settings = remove_topic(path, topic)
+            action = "removed" if changed else "unchanged"
+    except ConfigError as exc:
+        _print_error(args, str(exc))
+        return 2
+
+    payload = {
+        "ok": True,
+        "action": action,
+        "changed": changed,
+        "topic": topic,
+        "weight": weight,
+        "topics_path": str(path),
+        **_topic_payload(settings),
+    }
+    if args.json_output:
+        _print_json(payload)
+    else:
+        print(f"watch: {action}; topics: {len(settings.topics)}")
     return 0
 
 
@@ -442,6 +574,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_note(args)
     if args.command == "doctor":
         return _run_doctor(args)
+    if args.command == "watch":
+        return _run_watch(args)
     return 0
 
 

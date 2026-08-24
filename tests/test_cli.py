@@ -2,7 +2,7 @@ import json
 import re
 import sys
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -827,6 +827,12 @@ def test_search_json_works_before_or_after_subcommand_and_history_only_is_offlin
             {"title": "Robotic 3D Reconstruction", "arxiv_id": "2608.12345", "path": "report.md"}
         ],
         "online": [],
+        "filters": {
+            "categories": [],
+            "since": None,
+            "limit": 20,
+            "sort": "relevance",
+        },
     }
 
 
@@ -849,7 +855,8 @@ def test_search_online_cloud_without_vault_uses_one_client_and_writes_nothing(
     monkeypatch.setattr("paperflow.cli.httpx.Client", Client)
     monkeypatch.setattr(
         "paperflow.cli.search_arxiv",
-        lambda client, query: calls.append((client, query)) or [daily_result().papers[0].paper],
+        lambda client, query, **filters: calls.append((client, query, filters))
+        or [daily_result().papers[0].paper],
     )
     monkeypatch.chdir(tmp_path)
     before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
@@ -863,6 +870,175 @@ def test_search_online_cloud_without_vault_uses_one_client_and_writes_nothing(
     assert calls[1][1] == "robotics"
     assert calls[2] == "exit"
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
+
+
+def test_search_forwards_normalized_filters_and_returns_them_in_json(
+    config, monkeypatch, capsys
+):
+    observed = []
+    monkeypatch.delenv("PAPERFLOW_PRIVATE_CONFIG_JSON", raising=False)
+    monkeypatch.setattr("paperflow.cli.load_local_config", lambda: config)
+    monkeypatch.setattr(
+        "paperflow.cli.search_arxiv",
+        lambda client, query, **filters: observed.append((query, filters)) or [],
+    )
+
+    assert main(
+        [
+            "--json",
+            "search",
+            "vision language action",
+            "--category",
+            "cs.RO",
+            "--category",
+            "cs.AI",
+            "--since",
+            "2026-07-25",
+            "--limit",
+            "7",
+            "--sort",
+            "newest",
+        ]
+    ) == 0
+
+    assert observed[0][0] == "vision language action"
+    assert observed[0][1] == {
+        "max_results": 7,
+        "categories": ("cs.RO", "cs.AI"),
+        "since": date(2026, 7, 25),
+        "sort": "newest",
+    }
+    assert json.loads(capsys.readouterr().out)["filters"] == {
+        "categories": ["cs.RO", "cs.AI"],
+        "since": "2026-07-25",
+        "limit": 7,
+        "sort": "newest",
+    }
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "message"),
+    [
+        ("--since", "0d", "since duration must be positive"),
+        ("--since", "not-a-date", "since must be YYYY-MM-DD or Nd"),
+        ("--limit", "0", "limit must be between 1 and 100"),
+        ("--limit", "101", "limit must be between 1 and 100"),
+        ("--limit", "many", "limit must be an integer"),
+        ("--sort", "oldest", "sort must be relevance or newest"),
+    ],
+)
+def test_search_invalid_filters_return_json_exit_two_before_loading_config(
+    monkeypatch, capsys, option, value, message
+):
+    monkeypatch.setattr(
+        "paperflow.cli._load_config",
+        lambda: pytest.fail("invalid filters must fail before loading config"),
+    )
+
+    assert main(["--json", "search", "robotics", option, value]) == 2
+    assert json.loads(capsys.readouterr().out) == {"ok": False, "error": message}
+
+
+def test_parse_since_duration_uses_supplied_reference_date():
+    from paperflow.cli import _parse_since
+
+    assert _parse_since("30d", today=date(2026, 8, 24)) == date(2026, 7, 25)
+
+
+def _write_watch_topics(path):
+    path.write_text(
+        'top_n = 10\ntimezone = "Asia/Hong_Kong"\nhistory_reports = 30\n'
+        'arxiv_categories = ["cs.RO", "cs.CV"]\n\n'
+        '[topics]\nrobotics = 5\n"3d reconstruction" = 8\n',
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--json", "watch", "list"],
+        ["watch", "list", "--json"],
+    ],
+)
+def test_watch_list_supports_both_json_positions(monkeypatch, tmp_path, capsys, argv):
+    topics_path = tmp_path / "topics.toml"
+    _write_watch_topics(topics_path)
+    monkeypatch.setenv("PAPERFLOW_TOPICS_PATH", str(topics_path))
+
+    assert main(argv) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "ok": True,
+        "action": "listed",
+        "changed": False,
+        "topic": None,
+        "weight": None,
+        "topics_path": str(topics_path),
+        "topics": {"3d reconstruction": 8, "robotics": 5},
+        "arxiv_categories": ["cs.RO", "cs.CV"],
+        "timezone": "Asia/Hong_Kong",
+        "top_n": 10,
+        "history_reports": 30,
+    }
+
+
+def test_watch_add_update_remove_and_missing_remove_are_typed(
+    monkeypatch, tmp_path, capsys
+):
+    topics_path = tmp_path / "topics.toml"
+    _write_watch_topics(topics_path)
+    monkeypatch.setenv("PAPERFLOW_TOPICS_PATH", str(topics_path))
+
+    assert main(["--json", "watch", "add", "Vision Language Action", "--weight", "9"]) == 0
+    added = json.loads(capsys.readouterr().out)
+    assert (added["action"], added["changed"], added["topic"], added["weight"]) == (
+        "added",
+        True,
+        "vision language action",
+        9,
+    )
+
+    assert main(["--json", "watch", "add", "vision language action", "--weight", "7"]) == 0
+    updated = json.loads(capsys.readouterr().out)
+    assert (updated["action"], updated["changed"], updated["weight"]) == (
+        "updated",
+        True,
+        7,
+    )
+
+    assert main(["--json", "watch", "remove", "VISION LANGUAGE ACTION"]) == 0
+    removed = json.loads(capsys.readouterr().out)
+    assert (removed["action"], removed["changed"]) == ("removed", True)
+
+    assert main(["--json", "watch", "remove", "missing"]) == 0
+    unchanged = json.loads(capsys.readouterr().out)
+    assert (unchanged["action"], unchanged["changed"]) == ("unchanged", False)
+
+
+def test_watch_requires_explicit_topic_path(monkeypatch, capsys):
+    monkeypatch.delenv("PAPERFLOW_TOPICS_PATH", raising=False)
+
+    assert main(["--json", "watch", "list"]) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": False,
+        "error": "topic file is not configured",
+    }
+
+
+@pytest.mark.parametrize("weight", ["0", "101", "heavy"])
+def test_watch_add_invalid_weight_returns_json_exit_two(
+    monkeypatch, tmp_path, capsys, weight
+):
+    topics_path = tmp_path / "topics.toml"
+    _write_watch_topics(topics_path)
+    before = topics_path.read_bytes()
+    monkeypatch.setenv("PAPERFLOW_TOPICS_PATH", str(topics_path))
+
+    assert main(["--json", "watch", "add", "vision", "--weight", weight]) == 2
+    assert json.loads(capsys.readouterr().out)["ok"] is False
+    assert topics_path.read_bytes() == before
 
 
 def test_search_history_only_without_cloud_vault_is_config_error(
