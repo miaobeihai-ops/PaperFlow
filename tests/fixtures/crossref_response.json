@@ -9,6 +9,12 @@
         "published": {"date-parts": [[2026, 8, 23]]},
         "URL": "https://doi.org/10.1000/example",
         "subject": ["Chemical Engineering"]
+      },
+      {
+        "DOI": "10.1000/future",
+        "title": ["Future publication outside current window"],
+        "published": {"date-parts": [[2027, 1, 1]]},
+        "URL": "https://doi.org/10.1000/future"
       }
     ]
   }

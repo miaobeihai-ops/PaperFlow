@@ -56,9 +56,11 @@ def collect_openalex(client: httpx.Client, profile: DomainProfile, *, now: datet
     if "openalex" not in profile.providers:
         return ProviderBatch((), ProviderStatus("openalex", "skipped", 0))
     since = (now - timedelta(hours=profile.lookback_hours)).date().isoformat()
-    encoded = urllib.parse.urlencode({"search": " OR ".join(profile.query_seeds), "filter": f"from_publication_date:{since}", "per-page": min(100, profile.candidate_limit)})
+    until = now.date().isoformat()
+    encoded = urllib.parse.urlencode({"search": " OR ".join(profile.query_seeds), "filter": f"from_publication_date:{since},to_publication_date:{until}", "per-page": min(100, profile.candidate_limit)})
     try:
-        items = tuple(_parse(request_with_retry(client, f"{OPENALEX_WORKS_URL}?{encoded}").text)[: profile.candidate_limit])
+        parsed = _parse(request_with_retry(client, f"{OPENALEX_WORKS_URL}?{encoded}").text)
+        items = tuple(item for item in parsed if since <= item.published <= until)[: profile.candidate_limit]
     except Exception as exc:
         return ProviderBatch((), ProviderStatus("openalex", "failed", 0, safe_error(exc)))
     return ProviderBatch(items, ProviderStatus("openalex", "ok", len(items)))

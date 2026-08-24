@@ -37,8 +37,10 @@ def test_crossref_query_is_encoded_bounded_and_parsed():
     request = requests[0]
     assert request.url == httpx.URL("https://api.crossref.org/works", params=request.url.params)
     assert request.url.params["rows"] == "100"
-    assert request.url.params["filter"] == f"from-pub-date:{(NOW - timedelta(hours=profile().lookback_hours)).date()}"
+    assert request.url.params["filter"].startswith(f"from-pub-date:{(NOW - timedelta(hours=profile().lookback_hours)).date()},")
+    assert request.url.params["filter"].endswith(f",until-pub-date:{NOW.date()}")
     assert batch.status.state == "ok"
+    assert len(batch.items) == 1
     assert batch.items[0].doi == "10.1000/example"
     assert batch.items[0].abstract == "A useful abstract."
 
@@ -49,6 +51,8 @@ def test_openalex_uses_fixed_endpoint_and_parses_record():
         batch = collect_openalex(client, profile(), now=NOW)
     assert requests[0].url.host == "api.openalex.org"
     assert requests[0].url.params["per-page"] == "100"
+    assert requests[0].url.params["filter"].endswith(f",to_publication_date:{NOW.date()}")
+    assert len(batch.items) == 1
     assert batch.items[0].sources[0].external_id == "W123"
     assert batch.items[0].authors == ("Ada Researcher",)
 

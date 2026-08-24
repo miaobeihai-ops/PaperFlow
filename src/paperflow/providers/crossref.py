@@ -68,9 +68,11 @@ def collect_crossref(client: httpx.Client, profile: DomainProfile, *, now: datet
         return ProviderBatch((), ProviderStatus("crossref", "skipped", 0))
     query = " OR ".join(profile.query_seeds)
     since = (now - timedelta(hours=profile.lookback_hours)).date().isoformat()
-    encoded = urllib.parse.urlencode({"query": query, "filter": f"from-pub-date:{since}", "rows": min(100, profile.candidate_limit), "sort": "published", "order": "desc"})
+    until = now.date().isoformat()
+    encoded = urllib.parse.urlencode({"query": query, "filter": f"from-pub-date:{since},until-pub-date:{until}", "rows": min(100, profile.candidate_limit), "sort": "published", "order": "desc"})
     try:
-        items = tuple(_parse(request_with_retry(client, f"{CROSSREF_WORKS_URL}?{encoded}").text)[: profile.candidate_limit])
+        parsed = _parse(request_with_retry(client, f"{CROSSREF_WORKS_URL}?{encoded}").text)
+        items = tuple(item for item in parsed if since <= item.published <= until)[: profile.candidate_limit]
     except Exception as exc:
         return ProviderBatch((), ProviderStatus("crossref", "failed", 0, safe_error(exc)))
     return ProviderBatch(items, ProviderStatus("crossref", "ok", len(items)))

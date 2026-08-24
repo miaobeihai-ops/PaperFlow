@@ -8,6 +8,15 @@
       "authorships": [{"author": {"display_name": "Ada Researcher"}}],
       "primary_location": {"landing_page_url": "https://openalex.org/W123", "pdf_url": null},
       "concepts": [{"display_name": "Carbon capture"}]
+    },
+    {
+      "id": "https://openalex.org/W999",
+      "doi": "https://doi.org/10.1000/future",
+      "title": "Future publication outside current window",
+      "publication_date": "2027-01-01",
+      "authorships": [],
+      "primary_location": {"landing_page_url": "https://openalex.org/W999", "pdf_url": null},
+      "concepts": []
     }
   ]
 }
