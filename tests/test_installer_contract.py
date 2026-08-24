@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import venv
 from datetime import date
 from pathlib import Path
 
@@ -1968,22 +1969,7 @@ def _write_legacy_install(
 
 
 def _preprovision_fake_venv(setup: dict[str, object]) -> None:
-    venv = Path(setup["project"]) / ".venv"
-    scripts = venv / "Scripts"
-    scripts.mkdir(parents=True)
-    shutil.copy2(sys.executable, scripts / "python.exe")
-    source_config = Path(sys.executable).parents[1] / "pyvenv.cfg"
-    target_config = venv / "pyvenv.cfg"
-    if source_config.is_file():
-        shutil.copy2(source_config, target_config)
-    else:
-        target_config.write_text(
-            f"home = {Path(sys.executable).parent}\n"
-            "include-system-site-packages = false\n"
-            f"version = {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n"
-            f"executable = {sys.executable}\n",
-            encoding="utf-8",
-        )
+    venv.EnvBuilder(with_pip=False).create(Path(setup["project"]) / ".venv")
 
 
 def _use_file_backed_user_path(
