@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from paperflow.errors import ConfigError
 
 _TOP_FIELDS = {"schema_version", "run_id", "domain", "generated_at", "coverage", "additional_queries", "selected", "themes", "disagreements", "policy_industry_links", "actions", "source_limitations", "unresolved_questions"}
 _SELECTED_FIELDS = {"candidate_id", "analysis_depth", "relevance", "novelty", "evidence_quality", "industrial_value", "confidence", "reason", "method", "evidence", "limitations", "practical_implications", "citations"}
+_SELECTED_EVIDENCE_FIELDS = {"access_status", "full_text_file", "figures"}
+_FIGURE_FIELDS = {"file", "figure", "page", "caption", "source_url", "license"}
 _TEXT_FIELDS = {"reason", "method", "evidence", "limitations", "practical_implications"}
 _LIST_FIELDS = {"additional_queries", "themes", "disagreements", "policy_industry_links", "actions", "source_limitations", "unresolved_questions"}
 
@@ -34,14 +37,18 @@ def validate_analysis(context_path: Path, analysis: dict) -> dict:
         value = analysis.get(field)
         if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
             raise ConfigError("analysis list fields are invalid")
-    selected = analysis.get("selected")
+    normalized = copy.deepcopy(analysis)
+    selected = normalized.get("selected")
     if not isinstance(selected, list) or len(selected) > len(context["candidates"]):
         raise ConfigError("analysis selection is invalid")
     candidates = {item.get("key"): item for item in context["candidates"] if isinstance(item, dict)}
     seen: set[str] = set()
     for item in selected:
-        if not isinstance(item, dict) or set(item) != _SELECTED_FIELDS:
+        if not isinstance(item, dict) or not _SELECTED_FIELDS.issubset(item) or not set(item) <= _SELECTED_FIELDS | _SELECTED_EVIDENCE_FIELDS:
             raise ConfigError("analysis fields are invalid")
+        item.setdefault("access_status", "abstract_only")
+        item.setdefault("full_text_file", "")
+        item.setdefault("figures", [])
         candidate_id = item.get("candidate_id")
         if candidate_id not in candidates or candidate_id in seen:
             raise ConfigError("analysis references an unknown candidate")
@@ -62,7 +69,45 @@ def validate_analysis(context_path: Path, analysis: dict) -> dict:
                 raise ConfigError("analysis citations are invalid")
             if citation.get("url") not in allowed_urls:
                 raise ConfigError("citation URL is not present in the research context")
-    return analysis
+        access_status = item.get("access_status")
+        if access_status not in {"abstract_only", "open_access", "institutional"}:
+            raise ConfigError("analysis access status is invalid")
+        full_text_file = item.get("full_text_file")
+        figures = item.get("figures")
+        if not isinstance(full_text_file, str) or not isinstance(figures, list):
+            raise ConfigError("analysis evidence fields are invalid")
+        if item["analysis_depth"] == "full_text":
+            if access_status == "abstract_only" or not _evidence_file(context_path, full_text_file, {".pdf"}):
+                raise ConfigError("full-text evidence is invalid")
+        elif full_text_file or figures:
+            raise ConfigError("figures require full-text analysis")
+        if len(figures) > 3:
+            raise ConfigError("analysis supports at most three figures")
+        for figure in figures:
+            if not isinstance(figure, dict) or set(figure) != _FIGURE_FIELDS:
+                raise ConfigError("analysis figure evidence is invalid")
+            if not _evidence_file(context_path, figure.get("file"), {".png", ".jpg", ".jpeg"}):
+                raise ConfigError("analysis figure evidence is invalid")
+            if type(figure.get("page")) is not int or figure["page"] < 1:
+                raise ConfigError("analysis figure evidence is invalid")
+            if any(not isinstance(figure.get(field), str) or not figure[field].strip() for field in ("figure", "caption", "license")):
+                raise ConfigError("analysis figure evidence is invalid")
+            if figure.get("source_url") not in allowed_urls:
+                raise ConfigError("analysis figure source URL is not present in the research context")
+    return normalized
+
+
+def _evidence_file(context_path: Path, relative: object, suffixes: set[str]) -> bool:
+    if not isinstance(relative, str) or not relative.strip():
+        return False
+    run_dir = Path(context_path).parent.resolve()
+    candidate = run_dir / relative
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(run_dir)
+    except (OSError, ValueError):
+        return False
+    return resolved.is_file() and resolved.suffix.lower() in suffixes
 
 
 __all__ = ["validate_analysis", "_load_context"]
