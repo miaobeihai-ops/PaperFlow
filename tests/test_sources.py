@@ -428,7 +428,9 @@ def test_search_arxiv_uses_one_encoded_request_without_parameter_injection():
     assert parsed.netloc == "export.arxiv.org"
     assert parse_qs(parsed.query) == {
         "search_query": [
-            'all:"3d \\"reconstruction\\" \\\\ OR AND ANDNOT cat:cs.AI (robot)"'
+            'all:"3d" AND all:"\\"reconstruction\\"" AND all:"\\\\" '
+            'AND all:"OR" AND all:"AND" AND all:"ANDNOT" '
+            'AND all:"cat:cs.AI" AND all:"(robot)"'
         ],
         "start": ["0"],
         "max_results": ["20"],
@@ -438,7 +440,7 @@ def test_search_arxiv_uses_one_encoded_request_without_parameter_injection():
     assert papers[0].arxiv_id == "2608.12345"
 
 
-def test_search_arxiv_wraps_plain_query_as_one_literal_phrase():
+def test_search_arxiv_builds_token_category_date_and_sort_filters():
     calls = []
 
     def handler(request):
@@ -446,11 +448,44 @@ def test_search_arxiv_wraps_plain_query_as_one_literal_phrase():
         return httpx.Response(200, text='<feed xmlns="http://www.w3.org/2005/Atom" />')
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        search_arxiv(client, "3d reconstruction")
+        search_arxiv(
+            client,
+            "vision language action",
+            categories=("cs.RO", "cs.AI"),
+            since=date(2026, 8, 1),
+            max_results=7,
+            sort="newest",
+        )
 
-    assert parse_qs(urlparse(str(calls[0])).query)["search_query"] == [
-        'all:"3d reconstruction"'
+    parsed_query = parse_qs(urlparse(str(calls[0])).query)
+    assert parsed_query["search_query"] == [
+        '(all:"vision" AND all:"language" AND all:"action") '
+        'AND (cat:cs.RO OR cat:cs.AI) '
+        'AND submittedDate:[202608010000 TO 999912312359]'
     ]
+    assert parsed_query["max_results"] == ["7"]
+    assert parsed_query["sortBy"] == ["submittedDate"]
+
+
+@pytest.mark.parametrize(
+    "categories",
+    [("cs.RO OR all:robotics",), ("cs.RO)",), ("cs.RO", "")],
+)
+def test_search_arxiv_rejects_invalid_categories_without_request(categories):
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: pytest.fail("must not request"))
+    )
+    with client, pytest.raises(ValueError, match="category is invalid"):
+        search_arxiv(client, "robotics", categories=categories)
+
+
+@pytest.mark.parametrize("sort", ["", "ascending", "submittedDate"])
+def test_search_arxiv_rejects_invalid_sort_without_request(sort):
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: pytest.fail("must not request"))
+    )
+    with client, pytest.raises(ValueError, match="sort must be relevance or newest"):
+        search_arxiv(client, "robotics", sort=sort)
 
 
 @pytest.mark.parametrize("query", ["", " \t"])

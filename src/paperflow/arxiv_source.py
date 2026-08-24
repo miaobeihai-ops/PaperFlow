@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import date
@@ -12,6 +13,8 @@ from paperflow.normalize import canonical_arxiv_id, normalize_utc_date
 
 ATOM = "http://www.w3.org/2005/Atom"
 ARXIV = "http://arxiv.org/schemas/atom"
+_CATEGORY = re.compile(r"[A-Za-z-]+(?:\.[A-Za-z-]+)?")
+_SORTS = {"relevance": "relevance", "newest": "submittedDate"}
 
 
 class ArxivPaperNotFound(ValueError):
@@ -108,26 +111,51 @@ def _validate_max_results(max_results: int) -> None:
         raise ValueError("max_results must be between 1 and 100")
 
 
-def _literal_search_query(value: str) -> str:
+def _literal_term(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'all:"{escaped}"'
+
+
+def _search_expression(
+    query: str,
+    categories: tuple[str, ...],
+    since: date | None,
+) -> str:
+    terms = query.strip().split()
+    if not terms:
+        raise ValueError("query must not be blank")
+    expression = " AND ".join(_literal_term(term) for term in terms)
+    if categories:
+        if not all(_CATEGORY.fullmatch(value) for value in categories):
+            raise ValueError("category is invalid")
+        expression = f"({expression}) AND (" + " OR ".join(
+            f"cat:{value}" for value in categories
+        ) + ")"
+    if since is not None:
+        expression += (
+            f" AND submittedDate:[{since.strftime('%Y%m%d')}0000 TO 999912312359]"
+        )
+    return expression
 
 
 def search_arxiv(
     client: httpx.Client,
     query: str,
     max_results: int = 20,
+    *,
+    categories: tuple[str, ...] = (),
+    since: date | None = None,
+    sort: str = "relevance",
 ) -> list[Paper]:
-    cleaned = query.strip()
-    if not cleaned:
-        raise ValueError("query must not be blank")
     _validate_max_results(max_results)
+    if sort not in _SORTS:
+        raise ValueError("sort must be relevance or newest")
     encoded = urllib.parse.urlencode(
         {
-            "search_query": _literal_search_query(cleaned),
+            "search_query": _search_expression(query, categories, since),
             "start": 0,
             "max_results": max_results,
-            "sortBy": "relevance",
+            "sortBy": _SORTS[sort],
             "sortOrder": "descending",
         }
     )
