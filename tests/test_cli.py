@@ -151,7 +151,7 @@ def test_daily_json_uses_global_flag_and_stable_schema(
         "failures": [
             {"source": "hf-trending", "message": "source request failed"}
         ],
-        "report_path": "C:\\Vault\\PaperFlow\\Reports\\2026-08-20.md",
+        "report_path": str(Path("C:/Vault/PaperFlow/Reports/2026-08-20.md")),
     }
 
 
