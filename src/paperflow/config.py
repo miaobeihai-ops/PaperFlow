@@ -8,9 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-
-class ConfigError(ValueError):
-    pass
+from paperflow.errors import ConfigError
 
 
 @dataclass(frozen=True)

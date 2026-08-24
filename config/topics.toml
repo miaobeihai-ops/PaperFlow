@@ -1,0 +1,8 @@
+top_n = 10
+timezone = "Asia/Hong_Kong"
+history_reports = 30
+arxiv_categories = ["cs.RO", "cs.CV", "cs.AI", "cs.LG"]
+
+[topics]
+robotics = 5
+"3d reconstruction" = 8
