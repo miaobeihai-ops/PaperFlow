@@ -105,6 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     research_finalize = research_commands.add_parser("finalize")
     research_finalize.add_argument("--context", required=True)
     research_finalize.add_argument("--analysis", required=True)
+    research_finalize.add_argument("--pdf", action="store_true")
     for command in (research_prepare, research_inspect, research_finalize):
         command.add_argument(
             "--json", action="store_true", dest="json_output", default=argparse.SUPPRESS
@@ -609,7 +610,7 @@ def _run_research(args: argparse.Namespace) -> int:
             payload = {"ok": True, "command": "research.inspect", **summary}
         else:
             result = finalize_research(
-                Path(args.context), Path(args.analysis), home=home
+                Path(args.context), Path(args.analysis), home=home, export_pdf=args.pdf
             )
             payload = {
                 "ok": True,
@@ -619,7 +620,10 @@ def _run_research(args: argparse.Namespace) -> int:
                 "selected_count": result.selected_count,
                 "markdown_path": str(result.markdown_path),
                 "json_path": str(result.json_path),
+                "html_path": str(result.html_path),
             }
+            if result.pdf_path is not None:
+                payload["pdf_path"] = str(result.pdf_path)
     except ConfigError as exc:
         _print_error(args, str(exc))
         return 2

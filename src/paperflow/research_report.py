@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from paperflow.report import escape_markdown_block, escape_markdown_text
 from paperflow.research_analysis import _load_context, validate_analysis
 from paperflow.research_html import render_research_html
+from paperflow.research_pdf import export_html_to_pdf
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class FinalizedResearch:
     markdown_path: Path
     json_path: Path
     html_path: Path
+    pdf_path: Path | None
     domain: str
     local_date: str
     selected_count: int
@@ -95,7 +97,7 @@ def _render(context: dict, analysis: dict, figure_paths: dict[tuple[str, int], s
     return "\n".join(lines).rstrip() + "\n"
 
 
-def finalize_research(context_path: Path, analysis: dict | Path, *, home: Path) -> FinalizedResearch:
+def finalize_research(context_path: Path, analysis: dict | Path, *, home: Path, export_pdf: bool = False) -> FinalizedResearch:
     context_path = Path(context_path)
     context = _load_context(context_path)
     if isinstance(analysis, Path):
@@ -117,4 +119,11 @@ def finalize_research(context_path: Path, analysis: dict | Path, *, home: Path) 
         report_directory=directory,
     )
     _atomic_write(html_path, html.encode("utf-8"))
-    return FinalizedResearch(markdown_path, json_path, html_path, context["domain"], context["local_date"], len(validated["selected"]))
+    pdf_path = None
+    if export_pdf:
+        pdf_path = export_html_to_pdf(
+            html_path,
+            directory / f"{context['local_date']}.pdf",
+            temp_root=Path(home) / "tmp",
+        )
+    return FinalizedResearch(markdown_path, json_path, html_path, pdf_path, context["domain"], context["local_date"], len(validated["selected"]))

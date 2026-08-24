@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -49,3 +50,34 @@ def test_research_prepare_uses_explicit_installed_project_root(monkeypatch, caps
     assert main(["--json", "research", "prepare", "--domain", "chemical-energy"]) == 0
     assert captured["project_root"] == project_root
     assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_research_finalize_pdf_returns_all_artifact_paths(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("PAPERFLOW_HOME", str(tmp_path))
+    captured = {}
+
+    def fake_finalize(context, analysis, *, home, export_pdf):
+        captured["export_pdf"] = export_pdf
+        return SimpleNamespace(
+            domain="chemical-energy",
+            local_date="2026-08-24",
+            selected_count=1,
+            markdown_path=tmp_path / "report.md",
+            json_path=tmp_path / "report.json",
+            html_path=tmp_path / "report.html",
+            pdf_path=tmp_path / "report.pdf",
+        )
+
+    monkeypatch.setattr("paperflow.cli.finalize_research", fake_finalize)
+
+    assert main([
+        "--json", "research", "finalize",
+        "--context", "context.json",
+        "--analysis", "analysis.json",
+        "--pdf",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert captured["export_pdf"] is True
+    assert payload["html_path"].endswith("report.html")
+    assert payload["pdf_path"].endswith("report.pdf")
