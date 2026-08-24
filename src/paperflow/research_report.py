@@ -11,12 +11,14 @@ from zoneinfo import ZoneInfo
 
 from paperflow.report import escape_markdown_block, escape_markdown_text
 from paperflow.research_analysis import _load_context, validate_analysis
+from paperflow.research_html import render_research_html
 
 
 @dataclass(frozen=True)
 class FinalizedResearch:
     markdown_path: Path
     json_path: Path
+    html_path: Path
     domain: str
     local_date: str
     selected_count: int
@@ -103,7 +105,16 @@ def finalize_research(context_path: Path, analysis: dict | Path, *, home: Path) 
     directory = Path(home) / "reports" / context["domain"]
     markdown_path = directory / f"{context['local_date']}.md"
     json_path = directory / f"{context['local_date']}.json"
+    html_path = directory / f"{context['local_date']}.html"
     figure_paths = _copy_figures(context_path, context, validated, directory)
     _atomic_write(json_path, (json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"))
     _atomic_write(markdown_path, _render(context, validated, figure_paths).encode("utf-8"))
-    return FinalizedResearch(markdown_path, json_path, context["domain"], context["local_date"], len(validated["selected"]))
+    html = render_research_html(
+        context,
+        validated,
+        search_window=_search_window_text(context),
+        figure_paths=figure_paths,
+        report_directory=directory,
+    )
+    _atomic_write(html_path, html.encode("utf-8"))
+    return FinalizedResearch(markdown_path, json_path, html_path, context["domain"], context["local_date"], len(validated["selected"]))
