@@ -39,6 +39,8 @@ def test_export_pdf_uses_isolated_profile_and_explicit_output(tmp_path):
     assert "--no-pdf-header-footer" in captured["command"]
     assert any(value.startswith("--user-data-dir=") for value in captured["command"])
     assert str(html.resolve().as_uri()) == captured["command"][-1]
+    assert captured["kwargs"]["encoding"] == "utf-8"
+    assert captured["kwargs"]["errors"] == "replace"
     assert not list(temp_root.glob("paperflow-pdf-*"))
 
 

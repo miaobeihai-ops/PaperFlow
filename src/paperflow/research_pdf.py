@@ -53,7 +53,14 @@ def export_html_to_pdf(
         html_path.as_uri(),
     ]
     try:
-        completed = runner(command, capture_output=True, text=True, timeout=120)
+        completed = runner(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
         if completed.returncode != 0 or not temporary_pdf.is_file() or temporary_pdf.stat().st_size < 9:
             raise ConfigError("PDF export failed")
         os.replace(temporary_pdf, pdf_path)
