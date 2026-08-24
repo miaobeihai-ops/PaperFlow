@@ -1,0 +1,13 @@
+{
+  "results": [
+    {
+      "id": "https://openalex.org/W123",
+      "doi": "https://doi.org/10.1000/example",
+      "title": "Carbon capture membrane example",
+      "publication_date": "2026-08-23",
+      "authorships": [{"author": {"display_name": "Ada Researcher"}}],
+      "primary_location": {"landing_page_url": "https://openalex.org/W123", "pdf_url": null},
+      "concepts": [{"display_name": "Carbon capture"}]
+    }
+  ]
+}

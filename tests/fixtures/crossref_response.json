@@ -1,0 +1,15 @@
+{
+  "message": {
+    "items": [
+      {
+        "DOI": "10.1000/Example",
+        "title": ["Carbon capture membrane example"],
+        "abstract": "<jats:p>A useful abstract.</jats:p>",
+        "author": [{"given": "Ada", "family": "Researcher"}],
+        "published": {"date-parts": [[2026, 8, 23]]},
+        "URL": "https://doi.org/10.1000/example",
+        "subject": ["Chemical Engineering"]
+      }
+    ]
+  }
+}

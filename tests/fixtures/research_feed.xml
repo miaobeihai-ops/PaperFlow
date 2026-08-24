@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Policy feed</title>
+  <entry>
+    <id>policy-1</id>
+    <title>National hydrogen policy update</title>
+    <summary>&lt;b&gt;Policy&lt;/b&gt; details and targets.</summary>
+    <updated>2026-08-23T08:00:00Z</updated>
+    <link href="https://example.test/policy-1" />
+    <author><name>Policy Office</name></author>
+    <category term="hydrogen policy" />
+  </entry>
+</feed>

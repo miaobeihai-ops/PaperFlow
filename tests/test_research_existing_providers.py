@@ -18,7 +18,7 @@ def profile():
 
 
 def test_provider_registry_exposes_only_fixed_names():
-    assert tuple(PROVIDERS) == ("arxiv", "huggingface")
+    assert tuple(PROVIDERS) == ("arxiv", "huggingface", "crossref", "openalex", "feed")
 
 
 def test_arxiv_adapter_returns_normalized_records_and_bounded_status():
