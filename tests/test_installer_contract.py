@@ -201,6 +201,8 @@ def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, 
         "httpx==0.28.1\n", encoding="utf-8"
     )
     shutil.copytree(ROOT / "src" / "paperflow", project / "src" / "paperflow")
+    (project / "config").mkdir()
+    shutil.copy2(ROOT / "config" / "topics.toml", project / "config" / "topics.toml")
     (skill_source / "SKILL.md").write_text("current skill\n", encoding="utf-8")
 
     fake_bin = tmp_path / "fake-bin"
@@ -229,6 +231,7 @@ def _isolated_installer(tmp_path: Path, commands: tuple[str, ...]) -> dict[str, 
         "if defined PAPERFLOW_DOCTOR_LOG echo %*>>\"%PAPERFLOW_DOCTOR_LOG%\"\\r\\n"
         "if defined PAPERFLOW_DOCTOR_ENV_LOG (\\r\\n"
         "echo PAPERFLOW_HOME=%PAPERFLOW_HOME%>>\"%PAPERFLOW_DOCTOR_ENV_LOG%\"\\r\\n"
+        "echo PAPERFLOW_TOPICS_PATH=%PAPERFLOW_TOPICS_PATH%>>\"%PAPERFLOW_DOCTOR_ENV_LOG%\"\\r\\n"
         "echo PAPERFLOW_CACHE_DIR=%PAPERFLOW_CACHE_DIR%>>\"%PAPERFLOW_DOCTOR_ENV_LOG%\"\\r\\n"
         "echo TMP=%TMP%>>\"%PAPERFLOW_DOCTOR_ENV_LOG%\"\\r\\n"
         "echo TEMP=%TEMP%>>\"%PAPERFLOW_DOCTOR_ENV_LOG%\"\\r\\n"
@@ -550,6 +553,7 @@ def test_installer_declares_safe_preview_first_interface():
     assert "zotero.sqlite" not in text.casefold()
     assert "PAPERFLOW_GMAIL_APP_PASSWORD" not in text
     assert "PAPERFLOW_PRIVATE_CONFIG_JSON" not in text
+    assert "PAPERFLOW_MAIL_TO" not in text
 
 
 def test_installer_declares_data_root_runtime_and_no_cache_contract():
@@ -557,6 +561,7 @@ def test_installer_declares_data_root_runtime_and_no_cache_contract():
 
     for assignment in (
         'set "PAPERFLOW_HOME=$wrapperHome"',
+        'set "PAPERFLOW_TOPICS_PATH=$wrapperTopics"',
         'set "PAPERFLOW_CACHE_DIR=$wrapperCache"',
         'set "TMP=$wrapperTemp"',
         'set "TEMP=$wrapperTemp"',
@@ -567,6 +572,24 @@ def test_installer_declares_data_root_runtime_and_no_cache_contract():
     assert "return $Path.Replace('%', '%%')" in text
     assert "$env:PIP_NO_CACHE_DIR = '1'" in text
     assert "Set-PaperFlowPathEntry" in text
+    assert "$TopicsPath = Join-Path $ProjectRoot 'config\\topics.toml'" in text
+    assert "PaperFlow topic file must not be a reparse point." in text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
+def test_missing_project_topic_file_fails_before_persistent_writes(tmp_path):
+    setup = _isolated_installer(tmp_path, ("git", "codex"))
+    topics_path = Path(setup["project"]) / "config" / "topics.toml"
+    topics_path.unlink()
+    before = _snapshot(tmp_path)
+    data_root = tmp_path / "PaperFlow Data"
+
+    result = _run_isolated(setup, "-DataRoot", str(data_root))
+
+    assert result.returncode != 0
+    assert "PaperFlow topic file was not found." in result.stderr
+    assert _snapshot(tmp_path) == before
+    assert not data_root.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell behavior test")
@@ -1588,10 +1611,11 @@ def test_data_root_install_creates_layout_and_exact_wrapper_environment(tmp_path
     assert (data_root / "cache").is_dir()
     assert (data_root / "tmp").is_dir()
     wrapper_lines = wrapper.read_text(encoding="utf-8").splitlines()
-    assert wrapper_lines[:6] == [
+    assert wrapper_lines[:7] == [
         "@echo off",
         "setlocal DisableDelayedExpansion",
         f'set "PAPERFLOW_HOME={data_root.resolve()}"',
+        f'set "PAPERFLOW_TOPICS_PATH={Path(setup["project"]).resolve() / "config" / "topics.toml"}"',
         f'set "PAPERFLOW_CACHE_DIR={data_root.resolve() / "cache"}"',
         f'set "TMP={data_root.resolve() / "tmp"}"',
         f'set "TEMP={data_root.resolve() / "tmp"}"',
@@ -1641,6 +1665,7 @@ def test_data_root_wrapper_isolates_environment_special_paths_and_exit_code(tmp_
         "Path(os.environ['PAPERFLOW_WRAPPER_PROBE']).write_text(json.dumps({\n"
         "    'args': sys.argv[1:],\n"
         "    'home': os.environ.get('PAPERFLOW_HOME'),\n"
+        "    'topics': os.environ.get('PAPERFLOW_TOPICS_PATH'),\n"
         "    'cache': os.environ.get('PAPERFLOW_CACHE_DIR'),\n"
         "    'temp': os.environ.get('TEMP'),\n"
         "    'tmp': os.environ.get('TMP'),\n"
@@ -1653,7 +1678,7 @@ def test_data_root_wrapper_isolates_environment_special_paths_and_exit_code(tmp_
         "from pathlib import Path\n"
         "Path(os.environ['PAPERFLOW_CALLER_PROBE']).write_text(json.dumps({\n"
         "    name: os.environ.get(name) for name in "
-        "['PAPERFLOW_HOME', 'PAPERFLOW_CACHE_DIR', 'TEMP', 'TMP']\n"
+        "['PAPERFLOW_HOME', 'PAPERFLOW_TOPICS_PATH', 'PAPERFLOW_CACHE_DIR', 'TEMP', 'TMP']\n"
         "}), encoding='utf-8')\n",
         encoding="utf-8",
     )
@@ -1662,6 +1687,7 @@ def test_data_root_wrapper_isolates_environment_special_paths_and_exit_code(tmp_
         "@echo off\r\n"
         "setlocal EnableDelayedExpansion\r\n"
         'set "PAPERFLOW_HOME=caller-home"\r\n'
+        'set "PAPERFLOW_TOPICS_PATH=caller-topics"\r\n'
         'set "PAPERFLOW_CACHE_DIR=caller-cache"\r\n'
         'set "TEMP=caller-temp"\r\n'
         'set "TMP=caller-tmp"\r\n'
@@ -1696,12 +1722,14 @@ def test_data_root_wrapper_isolates_environment_special_paths_and_exit_code(tmp_
     assert observed == {
         "args": ["argument with spaces", "plain"],
         "home": str(data_root.resolve()),
+        "topics": str(Path(setup["project"]).resolve() / "config" / "topics.toml"),
         "cache": str((data_root / "cache").resolve()),
         "temp": str((data_root / "tmp").resolve()),
         "tmp": str((data_root / "tmp").resolve()),
     }
     assert json.loads(caller_log.read_text(encoding="utf-8")) == {
         "PAPERFLOW_HOME": "caller-home",
+        "PAPERFLOW_TOPICS_PATH": "caller-topics",
         "PAPERFLOW_CACHE_DIR": "caller-cache",
         "TEMP": "caller-temp",
         "TMP": "caller-tmp",
@@ -2025,6 +2053,7 @@ def test_successful_data_root_migrates_config_wrapper_path_and_preserves_neighbo
     assert (legacy_wrapper.parent.parent / "keep.txt").read_text(encoding="utf-8") == "preserve me"
     assert doctor_env_log.read_text(encoding="utf-8").splitlines() == [
         f"PAPERFLOW_HOME={data_root.resolve()}",
+        f"PAPERFLOW_TOPICS_PATH={Path(setup['project']).resolve() / 'config' / 'topics.toml'}",
         f"PAPERFLOW_CACHE_DIR={data_root.resolve() / 'cache'}",
         f"TMP={data_root.resolve() / 'tmp'}",
         f"TEMP={data_root.resolve() / 'tmp'}",

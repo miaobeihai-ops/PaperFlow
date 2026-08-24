@@ -460,6 +460,72 @@ def test_valid_data_root_adds_required_checks_and_uses_its_config(tmp_path):
     assert calls["dir"][temp_path] == 1
 
 
+def _valid_topics(topics_path: Path) -> None:
+    topics_path.write_text(
+        'arxiv_categories = ["cs.RO"]\n\n[topics]\nrobotics = 5\n',
+        encoding="utf-8",
+    )
+
+
+def test_explicit_topic_file_is_required_and_merged_into_configuration(tmp_path):
+    doctor = _doctor()
+    config_path = tmp_path / "config.toml"
+    topics_path = tmp_path / "topics.toml"
+    vault_path = tmp_path / "Vault"
+    vault_path.mkdir()
+    config_path.write_text(
+        f'vault_path = "{vault_path.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    _valid_topics(topics_path)
+
+    checks = _by_name(
+        doctor.run_checks(
+            config_path=config_path,
+            vault_path=vault_path,
+            skill_path=tmp_path / "missing-skill.md",
+            which=lambda _command: None,
+            path_exists=Path.exists,
+            path_is_file=Path.is_file,
+            path_is_dir=Path.is_dir,
+            environ={"PAPERFLOW_TOPICS_PATH": str(topics_path)},
+            python_version=(3, 11, 0),
+        )
+    )
+
+    assert checks["Topics"] == doctor.Check(
+        "Topics", True, True, "Topic file is available"
+    )
+    assert checks["Configuration"].ok is True
+
+
+def test_missing_explicit_topic_file_never_falls_back_to_inline_config(tmp_path):
+    doctor = _doctor()
+    config_path = tmp_path / "config.toml"
+    vault_path = tmp_path / "Vault"
+    vault_path.mkdir()
+    _valid_config(config_path, vault_path)
+
+    checks = _by_name(
+        doctor.run_checks(
+            config_path=config_path,
+            vault_path=vault_path,
+            skill_path=tmp_path / "missing-skill.md",
+            which=lambda _command: None,
+            path_exists=Path.exists,
+            path_is_file=Path.is_file,
+            path_is_dir=Path.is_dir,
+            environ={"PAPERFLOW_TOPICS_PATH": str(tmp_path / "missing.toml")},
+            python_version=(3, 11, 0),
+        )
+    )
+
+    assert checks["Topics"] == doctor.Check(
+        "Topics", False, True, "Topic file was not found"
+    )
+    assert checks["Configuration"].ok is False
+
+
 def test_data_root_tilde_uses_only_the_injected_user_profile(monkeypatch, tmp_path):
     doctor = _doctor()
     process_home = tmp_path / "ProcessHome"

@@ -85,6 +85,14 @@ if ($DataRootSupplied) {
 }
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+$TopicsPath = Join-Path $ProjectRoot 'config\topics.toml'
+if (-not (Test-Path -LiteralPath $TopicsPath -PathType Leaf)) {
+    throw 'PaperFlow topic file was not found.'
+}
+$topicsItem = Get-Item -LiteralPath $TopicsPath -Force
+if (($topicsItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'PaperFlow topic file must not be a reparse point.'
+}
 $VenvDir = Join-Path $ProjectRoot '.venv'
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
 $VenvPaperFlowExe = Join-Path $VenvDir 'Scripts\paperflow.exe'
@@ -880,12 +888,14 @@ if ($PSCmdlet.ShouldProcess($WrapperPath, 'Create or update PaperFlow command wr
     $wrapperCommand = ConvertTo-CmdEmbeddedPath -Path $VenvPaperFlow
     if ($DataRootSupplied) {
         $wrapperHome = ConvertTo-CmdEmbeddedPath -Path $ResolvedDataRoot
+        $wrapperTopics = ConvertTo-CmdEmbeddedPath -Path $TopicsPath
         $wrapperCache = ConvertTo-CmdEmbeddedPath -Path $CacheDir
         $wrapperTemp = ConvertTo-CmdEmbeddedPath -Path $TempDir
         $wrapper = @"
 @echo off
 setlocal DisableDelayedExpansion
 set "PAPERFLOW_HOME=$wrapperHome"
+set "PAPERFLOW_TOPICS_PATH=$wrapperTopics"
 set "PAPERFLOW_CACHE_DIR=$wrapperCache"
 set "TMP=$wrapperTemp"
 set "TEMP=$wrapperTemp"

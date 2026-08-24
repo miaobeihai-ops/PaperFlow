@@ -13,6 +13,7 @@ from paperflow.config import (
     load_local_config,
     resolve_paperflow_home,
 )
+from paperflow.topics import load_topic_settings, resolve_topics_path
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,30 @@ def run_checks(
         Check("Git", git_ok, True, "Git is available" if git_ok else "Git was not found")
     )
 
+    topics_path: Path | None = None
+    topics_configured = "PAPERFLOW_TOPICS_PATH" in env
+    topics_ok = True
+    if topics_configured:
+        try:
+            topics_path = resolve_topics_path(env)
+            topics_ok = (
+                topics_path is not None
+                and path_exists(topics_path)
+                and path_is_file(topics_path)
+            )
+            if topics_ok:
+                load_topic_settings(topics_path)
+        except ConfigError:
+            topics_ok = False
+        checks.append(
+            Check(
+                "Topics",
+                topics_ok,
+                True,
+                "Topic file is available" if topics_ok else "Topic file was not found",
+            )
+        )
+
     data_root: Path | None = None
     data_root_is_valid = True
     if "PAPERFLOW_HOME" in env:
@@ -138,6 +163,7 @@ def run_checks(
     config_message = "Configuration was not found"
     if (
         (config_path is not None or data_root_is_valid)
+        and (not topics_configured or topics_ok)
         and actual_config_path is not None
         and path_exists(actual_config_path)
     ):
@@ -145,7 +171,13 @@ def run_checks(
             config_message = "Configuration is invalid"
         else:
             try:
-                loaded_config = load_local_config(actual_config_path)
+                if topics_path is not None:
+                    loaded_config = load_local_config(
+                        actual_config_path,
+                        topics_path=topics_path,
+                    )
+                else:
+                    loaded_config = load_local_config(actual_config_path)
             except (ConfigError, OSError, ValueError):
                 config_message = "Configuration is invalid"
             else:
