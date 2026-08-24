@@ -1612,10 +1612,11 @@ def test_data_root_install_creates_layout_and_exact_wrapper_environment(tmp_path
     assert (data_root / "cache").is_dir()
     assert (data_root / "tmp").is_dir()
     wrapper_lines = wrapper.read_text(encoding="utf-8").splitlines()
-    assert wrapper_lines[:7] == [
+    assert wrapper_lines[:8] == [
         "@echo off",
         "setlocal DisableDelayedExpansion",
         f'set "PAPERFLOW_HOME={data_root.resolve()}"',
+        f'set "PAPERFLOW_PROJECT_ROOT={Path(setup["project"]).resolve()}"',
         f'set "PAPERFLOW_TOPICS_PATH={Path(setup["project"]).resolve() / "config" / "topics.toml"}"',
         f'set "PAPERFLOW_CACHE_DIR={data_root.resolve() / "cache"}"',
         f'set "TMP={data_root.resolve() / "tmp"}"',
@@ -2701,6 +2702,12 @@ def test_installer_creates_research_runtime_directories_on_data_root():
         "$RoboticsReportsDir = Join-Path $ReportsDir 'robotics'",
     ):
         assert statement in text
+
+
+def test_installer_wrapper_exposes_versioned_project_root_for_research_profiles():
+    text = _read("scripts/install-windows.ps1")
+    assert '$wrapperProjectRoot = ConvertTo-CmdEmbeddedPath -Path $ProjectRoot' in text
+    assert 'set "PAPERFLOW_PROJECT_ROOT=$wrapperProjectRoot"' in text
     assert "<!-- cloud-config-example -->" not in text
 
 

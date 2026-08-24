@@ -573,6 +573,16 @@ def _run_doctor(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _research_project_root() -> Path:
+    configured = os.environ.get("PAPERFLOW_PROJECT_ROOT")
+    if configured is None:
+        return Path(__file__).resolve().parents[2]
+    project_root = Path(configured)
+    if not project_root.is_absolute() or not project_root.is_dir():
+        raise ConfigError("PAPERFLOW_PROJECT_ROOT must be an absolute directory")
+    return project_root
+
+
 def _run_research(args: argparse.Namespace) -> int:
     try:
         home = require_paperflow_home(os.environ)
@@ -582,7 +592,7 @@ def _run_research(args: argparse.Namespace) -> int:
                 home,
                 datetime.now(UTC),
                 PROVIDERS,
-                Path(__file__).resolve().parents[2],
+                _research_project_root(),
             )
             payload = {
                 "ok": True,

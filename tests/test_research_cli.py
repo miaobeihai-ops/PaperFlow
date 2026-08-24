@@ -32,3 +32,20 @@ def test_research_requires_explicit_paperflow_home(monkeypatch, capsys):
     monkeypatch.delenv("PAPERFLOW_HOME", raising=False)
     assert main(["--json", "research", "prepare", "--domain", "robotics"]) == 2
     assert json.loads(capsys.readouterr().out)["error"] == "PAPERFLOW_HOME is required for research commands"
+
+
+def test_research_prepare_uses_explicit_installed_project_root(monkeypatch, capsys, tmp_path):
+    project_root = tmp_path / "installed-project"
+    project_root.mkdir()
+    monkeypatch.setenv("PAPERFLOW_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("PAPERFLOW_PROJECT_ROOT", str(project_root))
+    captured = {}
+
+    def fake_prepare(*args):
+        captured["project_root"] = args[4]
+        return PreparedResearch("run-1", "chemical-energy", "2026-08-24", tmp_path / "context.json", b"{}", 0, False)
+
+    monkeypatch.setattr("paperflow.cli.prepare_research", fake_prepare)
+    assert main(["--json", "research", "prepare", "--domain", "chemical-energy"]) == 0
+    assert captured["project_root"] == project_root
+    assert json.loads(capsys.readouterr().out)["ok"] is True

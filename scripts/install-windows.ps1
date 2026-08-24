@@ -895,10 +895,12 @@ if ($PSCmdlet.ShouldProcess($WrapperPath, 'Create or update PaperFlow command wr
         $wrapperTopics = ConvertTo-CmdEmbeddedPath -Path $TopicsPath
         $wrapperCache = ConvertTo-CmdEmbeddedPath -Path $CacheDir
         $wrapperTemp = ConvertTo-CmdEmbeddedPath -Path $TempDir
+        $wrapperProjectRoot = ConvertTo-CmdEmbeddedPath -Path $ProjectRoot
         $wrapper = @"
 @echo off
 setlocal DisableDelayedExpansion
 set "PAPERFLOW_HOME=$wrapperHome"
+set "PAPERFLOW_PROJECT_ROOT=$wrapperProjectRoot"
 set "PAPERFLOW_TOPICS_PATH=$wrapperTopics"
 set "PAPERFLOW_CACHE_DIR=$wrapperCache"
 set "TMP=$wrapperTemp"
