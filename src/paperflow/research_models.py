@@ -28,3 +28,17 @@ class ResearchItem:
     pdf_url: str
     subjects: tuple[str, ...]
     sources: tuple[SourceRecord, ...]
+
+
+@dataclass(frozen=True)
+class ProviderStatus:
+    name: str
+    state: str
+    count: int
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class ProviderBatch:
+    items: tuple[ResearchItem, ...]
+    status: ProviderStatus
