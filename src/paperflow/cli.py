@@ -19,6 +19,7 @@ from paperflow.arxiv_source import (
 from paperflow.config import (
     ConfigError,
     PaperFlowConfig,
+    config_from_topics,
     load_cloud_config,
     load_local_config,
 )
@@ -30,6 +31,7 @@ from paperflow.normalize import canonical_arxiv_id
 from paperflow.notes import NoteExists, paper_note_path, write_paper_note
 from paperflow.report import render_email_html, render_email_text
 from paperflow.search import search_history
+from paperflow.topics import load_topic_settings, resolve_topics_path
 
 
 _PUBLIC_SOURCES = frozenset(("hf-daily", "hf-trending", "arxiv"))
@@ -67,10 +69,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _load_config() -> PaperFlowConfig:
+    topics_path = resolve_topics_path(os.environ)
     private_config = os.environ.get("PAPERFLOW_PRIVATE_CONFIG_JSON")
     if private_config is not None:
+        if topics_path is not None:
+            return load_cloud_config(private_config, topics_path=topics_path)
         return load_cloud_config(private_config)
     try:
+        if topics_path is not None:
+            return load_local_config(topics_path=topics_path)
         return load_local_config()
     except FileNotFoundError as exc:
         raise ConfigError("local configuration file was not found") from exc
@@ -91,11 +98,24 @@ def _target_date(config: PaperFlowConfig, requested: str | None) -> str:
 def _load_email_config() -> tuple[PaperFlowConfig, GmailSettings]:
     address = os.environ.get("PAPERFLOW_GMAIL_ADDRESS")
     app_password = os.environ.get("PAPERFLOW_GMAIL_APP_PASSWORD")
-    private_config = os.environ.get("PAPERFLOW_PRIVATE_CONFIG_JSON")
-    if not address or not app_password or not private_config:
+    if not address or not app_password:
         raise ConfigError("email configuration is incomplete")
 
-    config = load_cloud_config(private_config)
+    topics_path = resolve_topics_path(os.environ)
+    private_config = os.environ.get("PAPERFLOW_PRIVATE_CONFIG_JSON")
+    if private_config == "":
+        raise ConfigError("email configuration is incomplete")
+    if private_config is not None:
+        if topics_path is not None:
+            config = load_cloud_config(private_config, topics_path=topics_path)
+        else:
+            config = load_cloud_config(private_config)
+    else:
+        mail_to = os.environ.get("PAPERFLOW_MAIL_TO")
+        if not mail_to or topics_path is None:
+            raise ConfigError("email configuration is incomplete")
+        config = config_from_topics(load_topic_settings(topics_path), mail_to=mail_to)
+
     if not config.mail_to:
         raise ConfigError("email configuration is incomplete")
     try:

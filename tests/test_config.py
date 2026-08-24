@@ -10,10 +10,12 @@ import paperflow.config as config_module
 from paperflow.config import (
     ConfigError,
     _build,
+    config_from_topics,
     default_local_config_path,
     load_cloud_config,
     load_local_config,
 )
+from paperflow.topics import TopicSettings
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -361,6 +363,93 @@ def test_load_cloud_config_from_private_json():
 
     assert config.mail_to == "reader@example.com"
     assert config.vault_path is None
+
+
+def test_local_config_uses_shared_topics_and_keeps_only_local_vault(tmp_path):
+    vault_path = tmp_path / "Vault"
+    config_path = tmp_path / "config.toml"
+    topics_path = tmp_path / "topics.toml"
+    config_path.write_text(
+        f'vault_path = "{vault_path.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    topics_path.write_text(
+        'top_n = 12\ntimezone = "Asia/Hong_Kong"\n'
+        'history_reports = 20\narxiv_categories = ["cs.RO", "cs.CV"]\n\n'
+        '[topics]\nrobotics = 5\n"3d reconstruction" = 8\n',
+        encoding="utf-8",
+    )
+
+    config = load_local_config(config_path, topics_path=topics_path)
+
+    assert config.vault_path == vault_path
+    assert config.keywords == {"robotics": 5, "3d reconstruction": 8}
+    assert config.arxiv_categories == ("cs.RO", "cs.CV")
+    assert config.timezone == "Asia/Hong_Kong"
+    assert config.top_n == 12
+    assert config.history_reports == 20
+
+
+def test_shared_topics_replace_legacy_inline_topic_fields(tmp_path):
+    config_path = tmp_path / "config.toml"
+    topics_path = tmp_path / "topics.toml"
+    config_path.write_text(
+        f'''vault_path = "{tmp_path.as_posix()}"
+top_n = 1
+timezone = "UTC"
+history_reports = 1
+arxiv_categories = ["cs.AI"]
+
+[keywords]
+legacy = 1
+''',
+        encoding="utf-8",
+    )
+    topics_path.write_text(
+        'top_n = 9\ntimezone = "Asia/Hong_Kong"\n'
+        'history_reports = 40\narxiv_categories = ["cs.RO"]\n\n'
+        '[topics]\nrobotics = 7\n',
+        encoding="utf-8",
+    )
+
+    config = load_local_config(config_path, topics_path=topics_path)
+
+    assert config.keywords == {"robotics": 7}
+    assert config.arxiv_categories == ("cs.RO",)
+    assert config.timezone == "Asia/Hong_Kong"
+    assert config.top_n == 9
+    assert config.history_reports == 40
+
+
+def test_explicit_missing_shared_topics_never_falls_back_to_inline_values(tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'''vault_path = "{tmp_path.as_posix()}"
+
+[keywords]
+legacy = 1
+''',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="topic file was not found"):
+        load_local_config(config_path, topics_path=tmp_path / "missing.toml")
+
+
+def test_config_from_topics_builds_mail_only_cloud_config():
+    settings = TopicSettings(
+        topics={"robotics": 5},
+        arxiv_categories=("cs.RO",),
+        timezone="Asia/Hong_Kong",
+        top_n=10,
+        history_reports=30,
+    )
+
+    config = config_from_topics(settings, mail_to="reader@example.com")
+
+    assert config.keywords == {"robotics": 5}
+    assert config.vault_path is None
+    assert config.mail_to == "reader@example.com"
 
 
 def test_rejects_empty_keywords(tmp_path):

@@ -9,6 +9,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from paperflow.errors import ConfigError
+from paperflow.topics import TopicSettings, load_topic_settings
 
 
 @dataclass(frozen=True)
@@ -137,21 +138,61 @@ def _build(data: dict[str, Any], *, require_vault: bool) -> PaperFlowConfig:
     )
 
 
-def load_local_config(path: Path | None = None) -> PaperFlowConfig:
+def _data_with_topics(
+    data: dict[str, Any], settings: TopicSettings
+) -> dict[str, Any]:
+    merged = dict(data)
+    merged.update(
+        keywords=dict(settings.topics),
+        arxiv_categories=list(settings.arxiv_categories),
+        timezone=settings.timezone,
+        top_n=settings.top_n,
+        history_reports=settings.history_reports,
+    )
+    return merged
+
+
+def load_local_config(
+    path: Path | None = None,
+    *,
+    topics_path: Path | None = None,
+) -> PaperFlowConfig:
     config_path = path or default_local_config_path()
     try:
         with config_path.open("rb") as handle:
             data = tomllib.load(handle)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError("local configuration is invalid TOML") from exc
+    if topics_path is not None:
+        data = _data_with_topics(data, load_topic_settings(topics_path))
     return _build(data, require_vault=True)
 
 
-def load_cloud_config(raw_json: str) -> PaperFlowConfig:
+def load_cloud_config(
+    raw_json: str,
+    *,
+    topics_path: Path | None = None,
+) -> PaperFlowConfig:
     try:
         data = json.loads(raw_json)
     except json.JSONDecodeError as exc:
         raise ConfigError("PAPERFLOW_PRIVATE_CONFIG_JSON is invalid JSON") from exc
     if not isinstance(data, dict):
         raise ConfigError("cloud configuration must be a JSON object")
+    if topics_path is not None:
+        data = _data_with_topics(data, load_topic_settings(topics_path))
     return _build(data, require_vault=False)
+
+
+def config_from_topics(settings: TopicSettings, *, mail_to: str) -> PaperFlowConfig:
+    if not isinstance(mail_to, str) or not mail_to.strip():
+        raise ConfigError("mail recipient must not be blank")
+    return PaperFlowConfig(
+        keywords=dict(settings.topics),
+        arxiv_categories=settings.arxiv_categories,
+        timezone=settings.timezone,
+        top_n=settings.top_n,
+        history_reports=settings.history_reports,
+        vault_path=None,
+        mail_to=mail_to,
+    )

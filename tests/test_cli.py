@@ -9,7 +9,7 @@ import pytest
 import httpx
 
 from paperflow.config import ConfigError
-from paperflow.cli import _public_failures, _target_date, main
+from paperflow.cli import _load_email_config, _public_failures, _target_date, main
 from paperflow.daily import AllSourcesFailed
 from paperflow.email import EmailDeliveryError
 from paperflow.models import DailyResult, Paper, RankedPaper, SourceFailure
@@ -387,6 +387,33 @@ def _email_environment(monkeypatch):
     monkeypatch.setenv("PAPERFLOW_GMAIL_ADDRESS", "sender@example.com")
     monkeypatch.setenv("PAPERFLOW_GMAIL_APP_PASSWORD", "PRIVATE_PASSWORD")
     monkeypatch.setenv("PAPERFLOW_PRIVATE_CONFIG_JSON", '{"private":"value"}')
+
+
+def test_email_config_uses_shared_topics_and_mail_only_environment(
+    monkeypatch, tmp_path
+):
+    topics_path = tmp_path / "topics.toml"
+    topics_path.write_text(
+        'arxiv_categories = ["cs.RO"]\n\n[topics]\nrobotics = 5\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PAPERFLOW_TOPICS_PATH", str(topics_path))
+    monkeypatch.setenv("PAPERFLOW_GMAIL_ADDRESS", "sender@example.com")
+    monkeypatch.setenv("PAPERFLOW_GMAIL_APP_PASSWORD", "PRIVATE_PASSWORD")
+    monkeypatch.setenv("PAPERFLOW_MAIL_TO", "reader@example.com")
+    monkeypatch.delenv("PAPERFLOW_PRIVATE_CONFIG_JSON", raising=False)
+    monkeypatch.setattr(
+        "paperflow.cli.load_local_config",
+        lambda *_args, **_kwargs: pytest.fail("email mode must not load local config"),
+    )
+
+    config, gmail = _load_email_config()
+
+    assert config.keywords == {"robotics": 5}
+    assert config.vault_path is None
+    assert config.mail_to == "reader@example.com"
+    assert gmail.address == "sender@example.com"
+    assert gmail.mail_to == "reader@example.com"
 
 
 def test_daily_without_email_never_sends(config, monkeypatch, capsys):
