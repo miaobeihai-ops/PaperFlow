@@ -1,9 +1,1 @@
-vault_path = "C:/Users/YourName/Documents/Obsidian Vault"
-top_n = 10
-timezone = "Asia/Hong_Kong"
-history_reports = 30
-arxiv_categories = ["cs.RO", "cs.CV", "cs.AI", "cs.LG"]
-
-[keywords]
-robotics = 5
-"3d reconstruction" = 8
+vault_path = "D:\\ObsidianVault"

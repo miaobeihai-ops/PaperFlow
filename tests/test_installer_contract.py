@@ -2471,7 +2471,10 @@ def test_readme_documents_executable_flow_in_required_order():
         ".\\scripts\\install-windows.ps1 -CheckOnly",
         ".\\scripts\\install-windows.ps1",
         "paperflow --json daily",
-        'paperflow --json search "robotics"',
+        'paperflow --json search "vision language action" --category cs.RO --since 30d --limit 20 --sort newest',
+        "paperflow --json watch list",
+        'paperflow --json watch add "vision language action" --weight 8',
+        'paperflow --json watch remove "robotics"',
         "paperflow --json note 2401.01234",
         "paperflow --json doctor",
         "paperflow --json daily --email --no-write",
@@ -2487,7 +2490,7 @@ def test_readme_documents_executable_flow_in_required_order():
     assert "zotero.sqlite" in text
     assert "SQLite" in text
     assert "已有 config.toml 会逐字节保留" in text
-    assert "不会覆盖 keywords、timezone" in text
+    assert "config/topics.toml" in text
     assert "免费开源" in text
     assert "绝对永久免费" in text
 
@@ -2506,6 +2509,7 @@ def test_readme_documents_data_root_install_layout_and_scoped_environment():
     ) in text
     for path in (
         r"D:\PaperFlow\.venv",
+        r"D:\PaperFlow\config\topics.toml",
         r"D:\PaperFlowData\bin\paperflow.cmd",
         r"D:\PaperFlowData\config\config.toml",
         r"D:\PaperFlowData\cache",
@@ -2711,21 +2715,31 @@ def test_readme_documents_upgrade_uninstall_privacy_and_usage_contracts():
     assert r"<Vault>\PaperFlow\Reports\YYYY-MM-DD.md" in text
 
 
-def test_readme_has_three_secret_names_and_valid_compact_cloud_json():
+def test_readme_has_three_mail_secrets_and_legacy_json_compatibility():
     text = _read("README.md")
     for name in (
         "PAPERFLOW_GMAIL_ADDRESS",
         "PAPERFLOW_GMAIL_APP_PASSWORD",
-        "PAPERFLOW_PRIVATE_CONFIG_JSON",
+        "PAPERFLOW_MAIL_TO",
     ):
         assert name in text
 
-    match = re.search(r"<!-- cloud-config-example -->\s*```json\s*(\{[^\n]+\})\s*```", text)
-    assert match is not None
-    cloud_config = json.loads(match.group(1))
-    assert cloud_config["keywords"]
-    assert cloud_config["mail_to"] == "you@example.com"
-    assert "vault_path" not in cloud_config
+    assert "PAPERFLOW_PRIVATE_CONFIG_JSON" in text
+    assert "兼容" in text
+    assert "不再由随附 workflow 使用" in text
+    assert "<!-- cloud-config-example -->" not in text
+
+
+def test_config_example_is_local_only_and_readme_documents_public_topics():
+    example = _read("config.example.toml")
+    readme = _read("README.md")
+
+    assert example.strip() == 'vault_path = "D:\\\\ObsidianVault"'
+    assert "[keywords]" not in example
+    assert "arxiv_categories" not in example
+    assert "config/topics.toml" in readme
+    assert "研究兴趣" in readme
+    assert "provider" in readme.casefold()
 
 
 def test_readme_documents_locked_installs_date_semantics_and_post_install_doctor():

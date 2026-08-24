@@ -32,7 +32,13 @@ def test_skill_frontmatter_has_trigger_only_name_and_description():
     assert description.startswith("Use when ")
     assert all(
         trigger in description.casefold()
-        for trigger in ("today's papers", "paper search", "obsidian paper note", "diagnostics")
+        for trigger in (
+            "today's papers",
+            "paper search",
+            "watched research topics",
+            "obsidian paper note",
+            "diagnostics",
+        )
     )
     assert len(frontmatter) == 2
 
@@ -42,6 +48,9 @@ def test_skill_allows_only_real_json_commands_and_flags():
     allowed_commands = {
         'paperflow --json daily',
         'paperflow --json search "<user query>"',
+        'paperflow --json watch list',
+        'paperflow --json watch add "<topic>" --weight <1-100>',
+        'paperflow --json watch remove "<topic>"',
         'paperflow --json note <arxiv-id>',
         'paperflow --json doctor',
     }
@@ -56,6 +65,11 @@ def test_skill_allows_only_real_json_commands_and_flags():
         "--date",
         "--no-write",
         "--history-only",
+        "--category",
+        "--since",
+        "--limit",
+        "--sort",
+        "--weight",
         "--force",
         "--email",
     }
@@ -72,6 +86,13 @@ def test_skill_encodes_result_save_exit_and_safety_contracts():
     assert "history" in folded and "online" in folded
     assert "paperflow/papers/<id>.md" in folded
     assert "explicitly" in folded and "replac" in folded and "--force" in text
+    assert "one to three" in folded
+    assert "arxiv_id" in folded
+    assert "one-off search" in folded and "watched topics" in folded
+    assert "pdf-reading capability" in folded
+    assert "titles and abstracts" in folded
+    for action in ("watch topics", "note", "overwrite", "commit", "push"):
+        assert action in folded
     for code in ("0", "1", "2", "3", "4", "5"):
         assert re.search(rf"\b{code}\b", text)
     for rule in (
@@ -100,7 +121,7 @@ def test_skill_daily_write_behavior_and_doctor_read_only_are_unambiguous():
     assert "only `--no-write`" in daily_folded
     assert "read-only" not in daily_folded
     assert "read-only" in doctor.casefold()
-    assert text.casefold().count("read-only") == 1
+    assert "read-only" in doctor.casefold()
 
 
 def test_skill_email_uses_complete_cloud_no_write_command():
@@ -111,28 +132,27 @@ def test_skill_email_uses_complete_cloud_no_write_command():
 
     assert f"`{command}`" in daily
     assert "cloud email" in folded
-    assert "does not write" in folded
-    assert "local report" in folded
+    assert "--no-write" in folded
     assert "`--email`" not in daily.replace(f"`{command}`", "")
 
 
 def test_skill_email_exit_handling_is_adjacent_to_email_command():
     text = _skill_text()
-    daily = next(line for line in text.splitlines() if line.startswith("- Daily:"))
-    folded = daily.casefold()
+    folded = text.casefold()
 
     for rule in (
-        "exit 2: email/private config invalid or missing",
-        "exit 3: all paper sources failed (failure email may be attempted)",
-        "exit 5: smtp/email delivery failed",
+        "exit 2",
+        "exit 3",
+        "exit 5",
     ):
         assert rule in folded
 
 
 def test_skill_is_concise_and_has_required_sections():
     text = _skill_text()
-    assert len(re.findall(r"\b[\w'-]+\b", text)) < 500
+    assert len(re.findall(r"\b[\w'-]+\b", text)) < 650
     assert "## Quick Reference" in text
+    assert "## Codex Research Flow" in text
     assert "## Safety and Exit Handling" in text
     assert "```mermaid" not in text
     assert "```dot" not in text

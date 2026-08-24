@@ -36,9 +36,11 @@ def test_daily_email_workflow_contract():
         "${{ secrets.PAPERFLOW_GMAIL_APP_PASSWORD }}" in content
     )
     assert (
-        "PAPERFLOW_PRIVATE_CONFIG_JSON: "
-        "${{ secrets.PAPERFLOW_PRIVATE_CONFIG_JSON }}" in content
+        "PAPERFLOW_TOPICS_PATH: ${{ github.workspace }}/config/topics.toml"
+        in content
     )
+    assert "PAPERFLOW_MAIL_TO: ${{ secrets.PAPERFLOW_MAIL_TO }}" in content
+    assert "PAPERFLOW_PRIVATE_CONFIG_JSON" not in content
 
     lowered = content.casefold()
     assert "upload-artifact" not in lowered

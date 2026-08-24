@@ -22,6 +22,7 @@ jobs:
       - run: python -m pip install --no-deps --no-build-isolation .
       - run: paperflow --json daily --email --no-write
         env:
+          PAPERFLOW_TOPICS_PATH: ${{ github.workspace }}/config/topics.toml
           PAPERFLOW_GMAIL_ADDRESS: ${{ secrets.PAPERFLOW_GMAIL_ADDRESS }}
           PAPERFLOW_GMAIL_APP_PASSWORD: ${{ secrets.PAPERFLOW_GMAIL_APP_PASSWORD }}
-          PAPERFLOW_PRIVATE_CONFIG_JSON: ${{ secrets.PAPERFLOW_PRIVATE_CONFIG_JSON }}
+          PAPERFLOW_MAIL_TO: ${{ secrets.PAPERFLOW_MAIL_TO }}

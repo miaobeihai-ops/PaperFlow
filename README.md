@@ -45,7 +45,7 @@ PowerShell 会把 `$env:USERPROFILE\Documents\Obsidian Vault` 按当前用户分
 - 源码仍在所选项目目录 `D:\PaperFlow`，虚拟环境仍在 `D:\PaperFlow\.venv`；`-DataRoot` 不移动源码或虚拟环境。
 - 命令 wrapper 位于 `D:\PaperFlowData\bin\paperflow.cmd`，配置位于 `D:\PaperFlowData\config\config.toml`，缓存与临时目录分别为 `D:\PaperFlowData\cache` 和 `D:\PaperFlowData\tmp`。
 - 小型 Codex Skill 仍安装到 `%USERPROFILE%\.agents\skills\paperflow`，不放进数据根目录。
-- wrapper 为每次 PaperFlow 命令设置 `PAPERFLOW_HOME`、缓存目录和临时目录。`PAPERFLOW_HOME` 是 PaperFlow 专用环境变量，不会全局迁移其他程序的数据。
+- wrapper 为每次 PaperFlow 命令设置 `PAPERFLOW_HOME`、绝对的 `PAPERFLOW_TOPICS_PATH`、缓存目录和临时目录。共享主题文件位于源码仓库的 `D:\PaperFlow\config\topics.toml`；`PAPERFLOW_HOME` 是 PaperFlow 专用环境变量，不会全局迁移其他程序的数据。
 
 安装器先按 `requirements.lock` 安装精确锁定的运行时与 setuptools 构建依赖，再以 `--no-deps --no-build-isolation` 安装 PaperFlow 本身，从而固定构建环境。使用 `-DataRoot` 时，这两个 pip 子进程临时使用 `PIP_NO_CACHE_DIR=1`，并把 `TEMP`、`TMP` 指向 `D:\PaperFlowData\tmp`；无论成功或失败，随后都会恢复安装进程原有的 TEMP、TMP 和 PIP_NO_CACHE_DIR。这里提供的是精确版本级可复现；为保持轻量，锁文件不包含制品哈希，不声称 hermetic 或 artifact-level 防篡改。安装末尾会通过新生成的 `paperflow.cmd --json doctor` 运行只读诊断；如果出现 warning，请按其 JSON 输出处理 required 检查。
 
@@ -67,21 +67,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps
 
 ## 本地配置
 
-使用上述 `-DataRoot` 正式安装且 `VaultPath` 有效时，会写入 `D:\PaperFlowData\config\config.toml`。也可参考以下内容手动编辑：
+使用上述 `-DataRoot` 正式安装且 `VaultPath` 有效时，会写入 `D:\PaperFlowData\config\config.toml`。这个本地文件只需要保存 Vault 路径：
 
-已有 config.toml 会逐字节保留，重新安装不会覆盖 keywords、timezone 或其他用户修改。TOML 不会展开环境变量，因此手动配置时必须把下面的中性示例替换为你的实际绝对 Vault 路径。
+已有 config.toml 会逐字节保留。TOML 不会展开环境变量，因此手动配置时必须把下面的中性示例替换为你的实际绝对 Vault 路径。
 
 ```toml
 vault_path = "D:\\ObsidianVault"
-top_n = 10
-timezone = "Asia/Hong_Kong"
-history_reports = 30
-arxiv_categories = ["cs.RO", "cs.CV", "cs.AI", "cs.LG"]
-
-[keywords]
-robotics = 5
-"3d reconstruction" = 8
 ```
+
+长期关注主题、arXiv 分类、时区、每日数量和历史保留数量统一放在版本化的 `config/topics.toml`。修改它即可同时影响本地日报和 GitHub Actions 邮件。该文件会公开你的研究兴趣；公开仓库中不要写入不希望公开的主题。论文 provider 地址由程序内部维护，不是用户配置项。旧版把 `keywords`、`timezone` 等字段内联在本地 config.toml 的格式仍兼容，但不再推荐。
 
 ## 命令
 
@@ -90,7 +84,10 @@ robotics = 5
 ```powershell
 paperflow --json daily
 paperflow --json daily --date 2026-08-20
-paperflow --json search "robotics"
+paperflow --json search "vision language action" --category cs.RO --since 30d --limit 20 --sort newest
+paperflow --json watch list
+paperflow --json watch add "vision language action" --weight 8
+paperflow --json watch remove "robotics"
 paperflow --json note 2401.01234
 paperflow --json doctor
 ```
@@ -103,7 +100,7 @@ paperflow search "3d reconstruction"
 paperflow daily
 ```
 
-`daily` 默认原子写入或更新 `<Vault>\PaperFlow\Reports\YYYY-MM-DD.md`；单篇笔记出现在 `<Vault>\PaperFlow\Papers\<arxiv_id>.md`。`search` 同时查本地历史和 arXiv；`note` 写入单篇笔记，已有文件时不会覆盖；`doctor` 只读检查环境。云端邮件使用：
+典型流程是：one-off search → shortlist → optional note；也可以在确认后 watch add，让它进入未来的本地或云端 daily。`daily` 默认原子写入或更新 `<Vault>\PaperFlow\Reports\YYYY-MM-DD.md`；单篇笔记出现在 `<Vault>\PaperFlow\Papers\<arxiv_id>.md`。`search` 同时查本地历史和 arXiv，在线结果不会自动保存；`watch list` 只读，`watch add/remove` 修改共享主题文件；`note` 写入单篇笔记，已有文件时不会覆盖；`doctor` 只读检查环境。云端邮件使用：
 
 `daily --date YYYY-MM-DD` 对 Hugging Face Daily、Hugging Face Trending 和 arXiv 三个来源都按论文发布日期筛选。旧日期可能为空，也可能受上游源的保留范围限制；命令不会为每篇论文额外发起请求。
 
@@ -115,7 +112,7 @@ paperflow --json daily --email --no-write
 
 ## Codex Skill
 
-仓库内 Skill 位于 `.agents\skills\paperflow`，安装器复制到当前用户的 `%USERPROFILE%\.agents\skills\paperflow`。Codex 遇到“今日论文、论文搜索、保存论文笔记、PaperFlow 诊断”等请求时，会优先使用结构化 JSON 命令；保存笔记或覆盖已有笔记前会遵守 Skill 中的确认边界。重新启动 Codex 后可让它执行“运行 PaperFlow doctor”。
+仓库内 Skill 位于 `.agents\skills\paperflow`，安装器复制到当前用户的 `%USERPROFILE%\.agents\skills\paperflow`。Codex 遇到“今日论文、主动搜索、长期关注主题、保存论文笔记、PaperFlow 诊断”等请求时，会优先使用结构化 JSON 命令。复杂问题可拆成一到三次有界搜索并按 arXiv ID 合并；临时搜索不会自动加入关注。修改关注主题、保存或覆盖笔记、commit 或 push 前都必须先获得明确确认。重新启动 Codex 后可让它执行“运行 PaperFlow doctor”。
 
 ## Zotero 协作流程
 
@@ -130,14 +127,9 @@ paperflow --json daily --email --no-write
 
 - `PAPERFLOW_GMAIL_ADDRESS`：发件 Gmail 地址。
 - `PAPERFLOW_GMAIL_APP_PASSWORD`：Google 账户生成的 App Password，不是登录密码。
-- `PAPERFLOW_PRIVATE_CONFIG_JSON`：紧凑 JSON，包含关键词、收件人和公开偏好，不含本地 Vault 路径。
+- `PAPERFLOW_MAIL_TO`：日报收件邮箱。
 
-`PAPERFLOW_PRIVATE_CONFIG_JSON` 的有效紧凑示例（请替换收件地址）：
-
-<!-- cloud-config-example -->
-```json
-{"keywords":{"robotics":5,"3d reconstruction":8},"arxiv_categories":["cs.RO","cs.CV","cs.AI","cs.LG"],"timezone":"Asia/Hong_Kong","top_n":10,"history_reports":30,"mail_to":"you@example.com"}
-```
+主题和公开偏好直接读取仓库的 `config/topics.toml`。旧的 `PAPERFLOW_PRIVATE_CONFIG_JSON` 仍作为兼容入口接受，但不再由随附 workflow 使用；升级后应改用上述三个邮件 Secrets。首次部署时 workflow 不会自行创建 Secrets。
 
 首次配置后，在 Actions → Daily PaperFlow email → Run workflow 触发 `workflow_dispatch`，检查运行日志和收件箱。不要把真实 Secret 写入仓库、Issue 或日志。
 
@@ -145,8 +137,8 @@ paperflow --json daily --email --no-write
 
 - **本地模式**：使用 `-DataRoot` 时，配置、cache、tmp 与 wrapper 位于所选数据根目录；本地元数据和报告写入你指定的 Vault 并保留在本机。PaperFlow 的网络访问限于 Hugging Face 和 arXiv 等论文提供方，并且仅在启用邮件时连接 Gmail SMTP。PaperFlow 本身没有模型客户端；独立可选的 AI Sidebar 可使用它自己的配置访问模型端点，该访问不属于 PaperFlow 自身的进程或配置。
 - **GitHub Actions 云端模式**：计划任务在 GitHub 托管 runner 上处理论文元数据。即使 workflow 不上传报告 Artifact、也不使用 SQLite 或其他数据库，JSON/stdout 中的论文详情仍可能进入 Actions 日志，并按 GitHub 的日志保留策略留存；发送的邮件内容会持续存在于发件人和收件人邮箱。
-- GitHub Secrets 会向 workflow 注入 SMTP 凭据和私有运行时配置（`PAPERFLOW_PRIVATE_CONFIG_JSON`），并非仅用于认证；PaperFlow 和随附 workflow 不会有意输出这些值，Secrets 不会被有意打印。仍应避免把真实 Secret 写入仓库、Issue、配置示例或调试输出。
-- 如需更强隐私，优先使用本地调度并关闭邮件；若仍使用云端任务，可减少 workflow 输出，以降低 Actions 日志中的论文详情。本文只说明该选项，本次文档更新不修改 workflow。
+- GitHub Secrets 会向 workflow 注入 SMTP 凭据和收件地址；PaperFlow 和随附 workflow 不会有意输出这些值，Secrets 不会被有意打印。`PAPERFLOW_PRIVATE_CONFIG_JSON` 仅是旧版私有运行时配置兼容入口，不再由随附 workflow 使用。仍应避免把真实 Secret 写入仓库、Issue、配置示例或调试输出。公开的 `config/topics.toml` 会暴露研究兴趣。
+- 如需更强隐私，优先使用本地调度并关闭邮件；若仍使用云端任务，可减少 workflow 输出，以降低 Actions 日志中的论文详情。
 - 安装器不读取或采集 Gmail Secrets，不接触 `zotero.sqlite`，不读取 AI Sidebar 密钥。PaperFlow 本身不要求付费模型或付费数据库。
 
 ## 升级与卸载
