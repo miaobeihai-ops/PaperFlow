@@ -65,7 +65,7 @@ robotics = 5
 
 This file is intentionally non-secret and versioned. Clones and GitHub Actions therefore use the same categories, weights, timezone, and report limits. The documentation must state that a public repository exposes these research interests.
 
-`PAPERFLOW_TOPICS_PATH` selects the file. The Windows installer writes that variable into the generated wrapper using the repository's absolute `config\topics.toml` path. GitHub Actions sets it to `config/topics.toml`.
+`PAPERFLOW_TOPICS_PATH` selects the file and must be absolute. The Windows installer writes that variable into the generated wrapper using the repository's absolute `config\topics.toml` path. GitHub Actions sets it to `${{ github.workspace }}/config/topics.toml`.
 
 ### Local-only configuration
 
@@ -116,6 +116,7 @@ Codex never reads Gmail App Passwords, AI Sidebar keys, or `zotero.sqlite`. Zote
 
 ## Components
 
+- `src/paperflow/errors.py`: define the shared `ConfigError` without creating a topics/config import cycle; `config.py` continues to re-export it for compatibility.
 - `src/paperflow/topics.py`: resolve, validate, render, and atomically mutate the shared topic file.
 - `src/paperflow/config.py`: merge local/cloud runtime data with shared topic settings and retain legacy compatibility.
 - `src/paperflow/arxiv_source.py`: build safe filtered online search requests.
